@@ -1022,7 +1022,8 @@ def test_heartbeat_file_written_each_loop(tmp_path):
     tr, ex, sink, clock = _clocked(tmp_path)
     tr.run_once(NOW)
     hb = json.loads((tmp_path / "testnet.heartbeat.json").read_text())
-    assert hb == {"last_loop": int(CLK * 1000), "last_manage_ok": int(CLK * 1000), "problem": None}
+    assert hb == {"last_loop": int(CLK * 1000), "last_manage_ok": int(CLK * 1000), "problem": None,
+                  "stream": "off", "stream_last_event": None}
     assert not list(tmp_path.glob("*.tmp"))
 
 

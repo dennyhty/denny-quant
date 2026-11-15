@@ -5,7 +5,8 @@
   TRADER_ALLOW_LIVE=1 python binance_trader.py --mode live   # 正式帳戶（測試網跑過再開）
 
 選項：--risk 0.0025（每筆風險）、--max-risk 0.01（最小下單量造成的風險上限）、--leverage 5（逐倉）、
---max-open 15（同時最多幾張）、--dd-half-r 20（回撤 20R 後風險減半）、--state-dir（狀態檔位置）。
+--max-open 15（同時最多幾張）、--dd-half-r 20（回撤 20R 後風險減半）、--state-dir（狀態檔位置）、
+--no-stream（不開即時推送）、--poll-stream 300（推送正常時的輪詢間隔）。
 暫停開新倉：在狀態資料夾建立 pause 檔（touch trader_state/pause）；刪掉就恢復。已開的倉位照常管理。
 """
 
@@ -21,6 +22,7 @@ from grid_trading.trader.binance import MAINNET, TESTNET, BinanceFutures
 from grid_trading.trader.bot import LABEL, Config, LiveBroker, Notifier, PaperBroker, Trader
 from grid_trading.trader.risk import RiskRules
 from grid_trading.trader.sizing import parse_filters
+from grid_trading.trader.stream import UserStream, url_templates
 
 
 def main(argv: list[str]) -> int:
@@ -34,6 +36,9 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--paper-equity", type=float, default=100.0)
     ap.add_argument("--state-dir", type=Path, default=Path("trader_state"))
     ap.add_argument("--poll", type=float, default=60.0, help="持倉管理幾秒看一次（預設 60）")
+    ap.add_argument("--poll-stream", type=float, default=300.0,
+                    help="即時推送正常時幾秒輪詢一次（預設 300；成交會馬上叫醒，這只是保險）")
+    ap.add_argument("--no-stream", action="store_true", help="不開即時推送（帳戶 websocket），只照 --poll 輪詢")
     ap.add_argument("--scan-delay", type=float, default=None,
                     help="收盤後幾秒再掃描（預設：測試網、正式 15 秒，紙上 75 秒，和測試網錯開）")
     ap.add_argument("--once", action="store_true", help="只跑一輪（測試用）")
@@ -44,8 +49,9 @@ def main(argv: list[str]) -> int:
         return 2
     cfg = Config(mode=a.mode, risk=a.risk, max_risk=a.max_risk, leverage=a.leverage, paper_equity=a.paper_equity,
                  rules=RiskRules(max_open=a.max_open, dd_half_r=a.dd_half_r), state_dir=a.state_dir,
-                 poll=a.poll, scan_delay=(75.0 if a.mode == "paper" else 15.0) if a.scan_delay is None else a.scan_delay)
+                 poll=a.poll, poll_stream=a.poll_stream, scan_delay=(75.0 if a.mode == "paper" else 15.0) if a.scan_delay is None else a.scan_delay)
     data = BinanceFutures(MAINNET)
+    stream = None
     if a.mode == "paper":
         venue = data
         broker = PaperBroker(data, cfg)
@@ -57,6 +63,8 @@ def main(argv: list[str]) -> int:
         venue = BinanceFutures(TESTNET if a.mode == "testnet" else MAINNET, key, secret)
         venue.sync_time()
         broker = LiveBroker(venue, data, cfg)
+        if not a.no_stream:  # 推播只是叫醒主迴圈，持倉照舊用 REST 輪詢查；BINANCE_WS_URL 可以換網址
+            stream = UserStream(venue, url_templates(testnet=a.mode == "testnet"))
     filters = parse_filters(venue.exchange_info())
     # Telegram 只推測試網和實盤的訊息；紙上交易只寫紀錄（Denny 2026-11-06）
     tg = a.mode != "paper"
@@ -64,7 +72,7 @@ def main(argv: list[str]) -> int:
                       os.environ.get("TELEGRAM_CHAT_ID", "") if tg else "")
     # systemd 停止服務送的是 SIGTERM：轉成正常結束，atexit 才會把佇列裡還沒送出的推播送完
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    Trader(cfg, data, broker, notify, filters).run(once=a.once)
+    Trader(cfg, data, broker, notify, filters, stream=stream).run(once=a.once)
     notify.flush()
     return 0
 

@@ -46,22 +46,29 @@ class OrderUnknown(RuntimeError):
 
 class BinanceFutures:
     def __init__(self, base: str = MAINNET, key: str = "", secret: str = "", timeout: float = 15,
-                 session: requests.Session | None = None):
+                 session: requests.Session | None = None, stream_session: requests.Session | None = None):
         self.base = base.rstrip("/")
         self.key, self.secret = key, secret
         self.timeout = timeout
         self.session = session or requests.Session()
+        # requests.Session 沒有保證多執行緒安全：即時推送的執行緒（listenKey）用自己的 session，不和交易迴圈共用
+        self.stream_session = stream_session or requests.Session()
         self.banned_until = 0.0   # 418（被封）時，到這個時間為止不再送需要簽名的請求
         self._offset = 0  # 本機時間和幣安伺服器時間的差（毫秒），簽名用
 
     # ---------- 底層 ----------
     def _request(self, method: str, path: str, params: dict | None = None, signed: bool = False, tries: int = 3,
-                 resend: bool = True):
+                 resend: bool = True, keyed: bool = False, session: requests.Session | None = None):
         """resend=False（下單用）：逾時、5xx 不自己重送，丟 OrderUnknown 讓呼叫的人先查單再決定。
-        429、-1021 和連線根本沒建立（ConnectTimeout）幣安沒有收到 / 沒有執行，照樣重送。"""
+        429、-1021 和連線根本沒建立（ConnectTimeout）幣安沒有收到 / 沒有執行，照樣重送。
+        keyed：只帶 API 金鑰、不簽名（listenKey 用）；和簽名請求一樣，被封期間不送。"""
         params = {k: v for k, v in (params or {}).items() if v is not None}
         headers = {}
-        if signed and time.time() < self.banned_until:
+        if keyed:
+            if not self.key:
+                raise RuntimeError("沒有設定 BINANCE_API_KEY")
+            headers["X-MBX-APIKEY"] = self.key
+        if (signed or keyed) and time.time() < self.banned_until:
             # 被封期間再送請求只會把封鎖拉長，直接失敗，讓上層記一行就好
             raise BinanceError(418, -1003, f"被幣安暫時封鎖，{self.banned_until - time.time():.0f} 秒後才會再送請求")
         for i in range(tries):
@@ -75,7 +82,7 @@ class BinanceFutures:
                 q["signature"] = hmac.new(self.secret.encode(), query.encode(), hashlib.sha256).hexdigest()
                 headers["X-MBX-APIKEY"] = self.key
             try:
-                resp = self.session.request(method, self.base + path, params=q, headers=headers, timeout=self.timeout)
+                resp = (session or self.session).request(method, self.base + path, params=q, headers=headers, timeout=self.timeout)
             except requests.RequestException as e:
                 if not resend and not isinstance(e, requests.ConnectTimeout):
                     raise OrderUnknown(f"{path} 送出後沒有回應：{e}") from e
@@ -142,6 +149,17 @@ class BinanceFutures:
 
     def price(self, symbol: str) -> float:
         return float(self._request("GET", "/fapi/v1/ticker/price", {"symbol": symbol})["price"])
+
+    # ---------- 帳戶推播的 listenKey（只要 API 金鑰，不簽名；由即時推送的執行緒呼叫） ----------
+    def new_listen_key(self) -> str:
+        """取得 listenKey（已經有有效的 key 時幣安回同一個並延長 60 分鐘）。"""
+        data = self._request("POST", "/fapi/v1/listenKey", keyed=True, session=self.stream_session)
+        return (data or {}).get("listenKey", "") if isinstance(data, dict) else ""
+
+    def keepalive_listen_key(self) -> str | None:
+        """延長 listenKey 60 分鐘。回傳幣安回的 key（可能沒有）；key 不存在時幣安回 -1125。"""
+        data = self._request("PUT", "/fapi/v1/listenKey", keyed=True, session=self.stream_session)
+        return data.get("listenKey") if isinstance(data, dict) else None
 
     # ---------- 帳戶（要金鑰） ----------
     def balance_usdt(self) -> float:
