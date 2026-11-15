@@ -3,6 +3,8 @@
 - 行情一律走正式站 fapi.binance.com（訊號要用真實價格算）；測試網模式的下單和持倉管理走測試網。
 - 美國的 IP 會被擋（HTTP 451），所以只能在美國以外的主機上跑（GitHub Actions 不行）。
 - 條件單（止損、止盈）從 2025-12 起改走 Algo Order：POST/DELETE /fapi/v1/algoOrder、GET /fapi/v1/openAlgoOrders。
+- 下單（市價單、條件單）不盲目重送：逾時或 5xx 時幣安可能其實已經成交（官方文件：執行狀態不明），
+  先用 client id 查這張單，查得到就當作成功，查無此單（-2013）才重送；查也查不到結果就丟 OrderUnknown。
 """
 
 from __future__ import annotations
@@ -27,12 +29,19 @@ def clean_id(client_id: str | None) -> str | None:
 
 
 MAX_WAIT = 30   # 被限流時單次最多等幾秒
+NOT_FOUND = -2013   # Order does not exist
+DUPLICATE = -4116   # ClientOrderId is duplicated
+DEAD = ("CANCELED", "EXPIRED", "REJECTED")
 
 
 class BinanceError(RuntimeError):
     def __init__(self, status: int, code, msg: str):
         super().__init__(f"HTTP {status} code={code} {msg}")
         self.status, self.code, self.msg = status, code, msg
+
+
+class OrderUnknown(RuntimeError):
+    """下單請求送出去了，但不知道幣安有沒有執行（逾時、5xx），用 client id 也查不出結果。"""
 
 
 class BinanceFutures:
@@ -46,7 +55,10 @@ class BinanceFutures:
         self._offset = 0  # 本機時間和幣安伺服器時間的差（毫秒），簽名用
 
     # ---------- 底層 ----------
-    def _request(self, method: str, path: str, params: dict | None = None, signed: bool = False, tries: int = 3):
+    def _request(self, method: str, path: str, params: dict | None = None, signed: bool = False, tries: int = 3,
+                 resend: bool = True):
+        """resend=False（下單用）：逾時、5xx 不自己重送，丟 OrderUnknown 讓呼叫的人先查單再決定。
+        429、-1021 和連線根本沒建立（ConnectTimeout）幣安沒有收到 / 沒有執行，照樣重送。"""
         params = {k: v for k, v in (params or {}).items() if v is not None}
         headers = {}
         if signed and time.time() < self.banned_until:
@@ -64,7 +76,9 @@ class BinanceFutures:
                 headers["X-MBX-APIKEY"] = self.key
             try:
                 resp = self.session.request(method, self.base + path, params=q, headers=headers, timeout=self.timeout)
-            except requests.RequestException:
+            except requests.RequestException as e:
+                if not resend and not isinstance(e, requests.ConnectTimeout):
+                    raise OrderUnknown(f"{path} 送出後沒有回應：{e}") from e
                 if i == tries - 1:
                     raise
                 time.sleep(2 ** i)
@@ -79,6 +93,8 @@ class BinanceFutures:
                 until = time.strftime("%H:%M", time.gmtime(self.banned_until))
                 print(f"幣安回 418（{path}），Retry-After={raw}，暫停送簽名請求到 {until} UTC", flush=True)
                 raise BinanceError(418, -1003, f"被幣安暫時封鎖到 {until} UTC")
+            if resp.status_code >= 500 and not resend:
+                raise OrderUnknown(f"{path} 回 HTTP {resp.status_code}（執行狀態不明）")
             if resp.status_code == 429 or resp.status_code >= 500:
                 if i < tries - 1:  # 被限流或幣安自己出錯，等一下再試
                     # Retry-After 可能是幾小時（418 封 IP）；整個交易迴圈只有一條執行緒，
@@ -97,6 +113,8 @@ class BinanceFutures:
                 data = {"msg": resp.text[:200]}
             if resp.status_code >= 400:
                 code = data.get("code") if isinstance(data, dict) else None
+                if code == -1007 and not resend:  # 幣安：等後端回應逾時，執行狀態不明
+                    raise OrderUnknown(f"{path} 回 -1007（執行狀態不明）")
                 if code == -1021 and signed and i < tries - 1:  # 時間差太大：對時後重送
                     self.sync_time()
                     continue
@@ -159,11 +177,64 @@ class BinanceFutures:
             if e.code != -4046:  # -4046：本來就是逐倉
                 raise
 
-    def market_order(self, symbol: str, side: str, position_side: str, quantity: str, client_id: str) -> dict:
-        """市價單。side 是 BUY/SELL，position_side 是 LONG/SHORT（雙向持倉）。回傳含 avgPrice、executedQty。"""
-        return self._request("POST", "/fapi/v1/order", {
+    def _place(self, path: str, params: dict, lookup, dup_ok: bool = False) -> dict:
+        """送出下單，結果不明時先用 client id 查單：查到就當作已下單，查無此單才重送，最多送 3 次。
+        dup_ok：幣安回「client id 重複」時去查那張單，還掛著或已成交就當作已下單（前一次其實成功了）。"""
+        err = None
+        for i in range(3):
+            try:
+                return self._request("POST", path, params, signed=True, resend=False)
+            except OrderUnknown as e:
+                err = e
+            except BinanceError as e:
+                if not (dup_ok and e.code == DUPLICATE):
+                    raise
+                found = lookup()
+                if str(found.get("algoStatus") or found.get("status") or "").upper() in DEAD:
+                    raise
+                return found
+            time.sleep(2 ** i)  # 剛送出的單可能要一下子才查得到，馬上查容易誤判成「查無此單」
+            try:
+                found = lookup()
+            except BinanceError as q:
+                if q.code == NOT_FOUND:  # 前一次沒有下成，重送安全
+                    print(f"{path} 結果不明，查無此單，重送（{err}）", flush=True)
+                    continue
+                raise OrderUnknown(f"{err}；查單也失敗：{q}") from q
+            except (requests.RequestException, OrderUnknown) as q:
+                raise OrderUnknown(f"{err}；查單也失敗：{q}") from q
+            if not isinstance(found, dict) or not (found.get("orderId") or found.get("algoId")):
+                raise OrderUnknown(f"{err}；查單回應看不懂：{str(found)[:200]}")
+            print(f"{path} 結果不明，查單後確認已下單（{err}）", flush=True)
+            return found
+        raise err
+
+    def order(self, symbol: str, client_id: str) -> dict:
+        """用 client id 查一般訂單（含已成交的）。查無此單時幣安回 -2013。"""
+        return self._request("GET", "/fapi/v1/order", {"symbol": symbol, "origClientOrderId": clean_id(client_id)},
+                             signed=True)
+
+    def market_order(self, symbol: str, side: str, position_side: str, quantity: str, client_id: str,
+                     check_first: bool = False) -> dict:
+        """市價單。side 是 BUY/SELL，position_side 是 LONG/SHORT（雙向持倉）。回傳含 avgPrice、executedQty、orderId。
+        幣安只要求 client id 在「掛著的單」之間不重複，已成交的市價單 id 可以再用，所以不能靠重複 id 擋掉重送：
+        結果不明時一律先查單。check_first：上一次送這個 id 結果不明（例如程式在中間出錯），送之前先查。"""
+        cid = clean_id(client_id)
+
+        def lookup():
+            return self.order(symbol, cid)
+
+        if check_first:
+            try:
+                found = lookup()
+                if found.get("orderId"):
+                    return found
+            except BinanceError as e:
+                if e.code != NOT_FOUND:
+                    raise
+        return self._place("/fapi/v1/order", {
             "symbol": symbol, "side": side, "positionSide": position_side, "type": "MARKET",
-            "quantity": quantity, "newClientOrderId": clean_id(client_id), "newOrderRespType": "RESULT"}, signed=True)
+            "quantity": quantity, "newClientOrderId": cid, "newOrderRespType": "RESULT"}, lookup)
 
     def conditional_order(self, symbol: str, side: str, position_side: str, kind: str, trigger: str,
                           quantity: str | None = None, client_id: str | None = None) -> dict:
@@ -175,7 +246,10 @@ class BinanceFutures:
             params["closePosition"] = "true"
         else:
             params["quantity"] = quantity
-        return self._request("POST", "/fapi/v1/algoOrder", params, signed=True)
+        if client_id is None:  # 沒有 client id 查不了單，只能照舊送一次
+            return self._request("POST", "/fapi/v1/algoOrder", params, signed=True, resend=False)
+        return self._place("/fapi/v1/algoOrder", params, lambda: self.algo_order_by_client(params["clientAlgoId"]),
+                           dup_ok=True)
 
     def cancel_conditional(self, algo_id) -> None:
         try:
@@ -188,10 +262,17 @@ class BinanceFutures:
         """查一張條件單（含已觸發、已取消的）；algoStatus 是 TRIGGERED / FINISHED 表示已成交。"""
         return self._request("GET", "/fapi/v1/algoOrder", {"algoId": algo_id}, signed=True)
 
+    def algo_order_by_client(self, client_id: str) -> dict:
+        return self._request("GET", "/fapi/v1/algoOrder", {"clientAlgoId": clean_id(client_id)}, signed=True)
+
     def open_conditionals(self, symbol: str | None = None) -> list[dict]:
         """掛著的條件單。不給 symbol 就一次列出所有幣（權重 40，單一幣是 1）：幣多時一個請求比每個幣各打一次省得多。"""
         data = self._request("GET", "/fapi/v1/openAlgoOrders", {"symbol": symbol}, signed=True)
         return data if isinstance(data, list) else data.get("orders", [])
+
+    def order_trades(self, symbol: str, order_id) -> list[dict]:
+        """某一張訂單的成交明細（userTrades 用 orderId 篩，不受 7 天時間範圍限制）。"""
+        return self._request("GET", "/fapi/v1/userTrades", {"symbol": symbol, "orderId": order_id}, signed=True)
 
     def realized_since(self, symbol: str, position_side: str, start_ms: int) -> float:
         """某個代號、某一邊（LONG/SHORT）從 start_ms 起的已實現損益減手續費（USDT）。"""

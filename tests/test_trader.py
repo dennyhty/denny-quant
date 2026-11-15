@@ -84,6 +84,17 @@ class FakeExchange:
         self.done = {}
         self.client_ids = set()
         self.open_calls = 0
+        self.fee = 0.0005          # 成交明細的手續費率
+        self.trades = {}           # orderId → 成交明細（userTrades 的格式）
+        self.next_order = 1000
+        self.by_cid = {}           # client id → 市價單回應（check_first 查單用）
+
+    def _trade(self, ps, qty, price):
+        oid = self.next_order
+        self.next_order += 1
+        self.trades[oid] = [{"orderId": oid, "qty": str(qty), "price": str(price), "positionSide": ps,
+                             "commission": str(qty * price * self.fee), "commissionAsset": "USDT"}]
+        return oid
 
     # 行情
     def klines(self, symbol, interval, limit=500):
@@ -111,14 +122,18 @@ class FakeExchange:
     def set_isolated(self, s):
         pass
 
-    def market_order(self, symbol, side, ps, quantity, client_id):
+    def market_order(self, symbol, side, ps, quantity, client_id, check_first=False):
+        if check_first and client_id in self.by_cid:
+            return self.by_cid[client_id]
         q = float(quantity)
         opening = (side == "BUY") == (ps == "LONG")
         if not opening and self.pos.get((symbol, ps), 0.0) < q - 1e-9:
             from grid_trading.trader.binance import BinanceError
             raise BinanceError(400, -2022, "ReduceOnly Order is rejected.")
         self.pos[(symbol, ps)] = self.pos.get((symbol, ps), 0.0) + (q if opening else -q)
-        return {"executedQty": quantity, "avgPrice": str(self.px)}
+        oid = self._trade(ps, q, self.px)
+        self.by_cid[client_id] = {"executedQty": quantity, "avgPrice": str(self.px), "orderId": oid}
+        return self.by_cid[client_id]
 
     def conditional_order(self, symbol, side, ps, kind, trigger, quantity=None, client_id=None):
         if kind == "STOP_MARKET" and self.fail_stop:
@@ -144,7 +159,11 @@ class FakeExchange:
 
     def algo_order(self, oid):
         o = self.done[oid]
-        return {"algoStatus": o["algoStatus"], "triggerPrice": str(o["trigger"]), "actualPrice": "0"}
+        return {"algoStatus": o["algoStatus"], "triggerPrice": str(o["trigger"]),
+                "actualPrice": str(o.get("fill") or 0), "actualOrderId": o.get("actualOrderId")}
+
+    def order_trades(self, symbol, order_id):
+        return self.trades.get(order_id, [])
 
     def open_conditionals(self, symbol=None):
         self.open_calls += 1
@@ -153,13 +172,16 @@ class FakeExchange:
     def realized_since(self, symbol, ps, start):
         return self.pnl
 
-    def trigger(self, kind, n=0, oid=None):
-        """讓第 n 張某類條件單（或指定 id）成交。"""
+    def trigger(self, kind, n=0, oid=None, fill=None):
+        """讓第 n 張某類條件單（或指定 id）成交（fill：實際成交價，預設是觸發價）。
+        只會減倉：數量比交易所上的合併倉位大時只平到倉位為止。"""
         o = self.algo[oid] if oid else [o for o in self.algo.values() if o["type"] == kind][n]
         key = (o["symbol"], o["ps"])
-        self.pos[key] -= self.pos[key] if o["qty"] is None else o["qty"]
+        amt = self.pos[key] if o["qty"] is None else min(o["qty"], self.pos[key])
+        self.pos[key] -= amt
         del self.algo[o["algoId"]]
-        self.done[o["algoId"]] = {**o, "algoStatus": "FINISHED"}
+        aid = self._trade(o["ps"], amt, fill or o["trigger"])
+        self.done[o["algoId"]] = {**o, "algoStatus": "FINISHED", "fill": fill, "actualOrderId": aid}
 
 
 def make_signal(side=LONG, price=100.0, risk=4.0, interval="2H", t=T0):
@@ -577,3 +599,322 @@ def test_paper_manage_skips_recheck_within_interval(tmp_path):
     assert len(calls) == 1
     tr.step_manage(now + pd.Timedelta(seconds=cfg.paper_check + 1))
     assert len(calls) == 2
+
+
+# ---------- 下單不盲目重送 ----------
+class _Resp:
+    def __init__(self, status, body):
+        self.status_code, self.body = status, body
+        self.headers = {}
+        self.text = str(body)
+
+    def json(self):
+        return self.body
+
+
+class _Script:
+    """照順序回應的假 session：每一步是 (HTTP 狀態, 內容) 或要丟出的例外。"""
+
+    def __init__(self, steps):
+        self.steps, self.calls = list(steps), []
+
+    def request(self, method, url, params=None, headers=None, timeout=None):
+        self.calls.append((method, url.split("/fapi")[-1], dict(params or {})))
+        step = self.steps.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return _Resp(*step)
+
+
+def _scripted(steps, monkeypatch):
+    from grid_trading.trader import binance as bmod
+    monkeypatch.setattr(bmod.time, "sleep", lambda s: None)
+    sess = _Script(steps)
+    return bmod, bmod.BinanceFutures(key="k", secret="s", session=sess), sess
+
+
+def _posts(sess):
+    return [c for c in sess.calls if c[0] == "POST"]
+
+
+def test_market_order_timeout_is_looked_up_not_resent(monkeypatch):
+    """第一次其實成交了但回應掉了：查單查到就用它，絕不再送一張（會變成兩倍倉位）。"""
+    import requests
+    filled = {"orderId": 5, "status": "FILLED", "executedQty": "0.625", "avgPrice": "100"}
+    bmod, cli, sess = _scripted([requests.ReadTimeout("x"), (200, filled)], monkeypatch)
+    assert cli.market_order("XUSDT", "BUY", "LONG", "0.625", "v2Habe") == filled
+    assert len(_posts(sess)) == 1
+    assert sess.calls[1][:2] == ("GET", "/v1/order") and sess.calls[1][2]["origClientOrderId"] == "v2Habe"
+
+
+def test_market_order_5xx_then_not_found_is_resent_once(monkeypatch):
+    ok = {"orderId": 6, "status": "FILLED", "executedQty": "1", "avgPrice": "100"}
+    bmod, cli, sess = _scripted([(503, {"code": -1001, "msg": "x"}),
+                                 (400, {"code": -2013, "msg": "Order does not exist."}),
+                                 (200, ok)], monkeypatch)
+    assert cli.market_order("XUSDT", "BUY", "LONG", "1", "v2Habe") == ok
+    assert len(_posts(sess)) == 2
+
+
+def test_market_order_unknown_when_lookup_also_fails(monkeypatch):
+    import requests
+    bmod, cli, sess = _scripted([requests.ReadTimeout("x")] + [requests.ConnectionError("y")] * 3, monkeypatch)
+    with pytest.raises(bmod.OrderUnknown):
+        cli.market_order("XUSDT", "BUY", "LONG", "1", "v2Habe")
+    assert len(_posts(sess)) == 1
+
+
+def test_conditional_order_lookup_by_client_algo_id(monkeypatch):
+    bmod, cli, sess = _scripted([(502, {}), (200, {"algoId": 7, "algoStatus": "NEW"})], monkeypatch)
+    r = cli.conditional_order("XUSDT", "SELL", "LONG", "STOP_MARKET", "96", quantity="1", client_id="v2Habs1")
+    assert r["algoId"] == 7 and len(_posts(sess)) == 1
+    assert sess.calls[1][2]["clientAlgoId"] == "v2Habs1"
+
+
+def test_conditional_order_duplicate_on_resend_means_already_placed(monkeypatch):
+    import requests
+    bmod, cli, sess = _scripted([requests.ReadTimeout("x"),
+                                 (400, {"code": -2013, "msg": "Order does not exist."}),   # 還查不到
+                                 (400, {"code": -4116, "msg": "ClientOrderId is duplicated."}),
+                                 (200, {"algoId": 9, "algoStatus": "NEW"})], monkeypatch)
+    r = cli.conditional_order("XUSDT", "SELL", "LONG", "STOP_MARKET", "96", quantity="1", client_id="v2Habs1")
+    assert r["algoId"] == 9 and len(_posts(sess)) == 2
+
+
+def test_order_post_429_is_still_retried(monkeypatch):
+    """429 是被拒絕（沒有執行），可以直接重送。"""
+    ok = {"orderId": 6, "status": "FILLED", "executedQty": "1", "avgPrice": "100"}
+    bmod, cli, sess = _scripted([(429, {"code": -1003, "msg": "x"}), (200, ok)], monkeypatch)
+    assert cli.market_order("XUSDT", "BUY", "LONG", "1", "v2Habe") == ok
+    assert len(_posts(sess)) == 2 and len(sess.calls) == 2
+
+
+def test_entry_with_unknown_result_is_reported_and_hourly_audit_flags_once(tmp_path):
+    from grid_trading.trader.binance import OrderUnknown
+    from grid_trading.trader.bot import client_tag
+    ex = FakeExchange()
+    real = ex.market_order
+
+    def lost(*a, **k):
+        real(*a, **k)   # 交易所其實成交了，回應掉了
+        raise OrderUnknown("/fapi/v1/order 送出後沒有回應")
+
+    ex.market_order = lost
+    tr, sink = make_trader(tmp_path, LiveBroker(ex, ex, Config()), ex)
+    sig = make_signal()
+    tr.try_open(sig)
+    assert not tr.store.positions
+    msg = sink[-1]
+    assert "下單結果不明" in msg and "XUSDT" in msg and "LONG" in msg and f"{client_tag(sig)}e" in msg
+    assert "開倉失敗" not in msg
+    now = T0 + pd.Timedelta(minutes=5)
+    tr.step_audit(now)
+    assert "比這個程式記錄的多" in sink[-1]
+    n = len(sink)
+    tr.step_audit(now + pd.Timedelta(minutes=30))   # 還不到一小時：不查
+    tr.step_audit(now + pd.Timedelta(hours=2))      # 同一個差異：不再推
+    assert len(sink) == n
+    ex.pos[("XUSDT", "LONG")] = 1.0                  # 數量變了：再推一次
+    tr.step_audit(now + pd.Timedelta(hours=4))
+    assert len(sink) == n + 1 and "比這個程式記錄的多" in sink[-1]
+
+
+# ---------- 止損成交前先處理止盈 ----------
+def test_tp_fill_is_booked_before_stop_fill(tmp_path):
+    ex = FakeExchange(price=100.0, df=candles([(101, 99, 100)] * 3))
+    tr, sink = make_trader(tmp_path, LiveBroker(ex, ex, Config()), ex)
+    tr.try_open(make_signal())
+    ex.trigger("TAKE_PROFIT_MARKET", 0)    # TP1 成交後、程式還沒移止損，價格就回頭打到原始止損
+    ex.trigger("STOP_MARKET")              # 止損是用 0.625 掛的，交易所只平到剩下的 0.469
+    tr.step_manage(T0 + pd.Timedelta(minutes=30))
+    assert not tr.store.positions and not ex.algo and not ex.positions()
+    assert any("TP1 觸及" in m for m in sink)
+    q, rest = 0.156, 0.625 - 0.156
+    gross = q * 4 - rest * 4
+    fees = 0.0005 * (100 * 0.625 + q * 104 + rest * 96)
+    row = tr.store.ledger[-1]
+    assert row["pnl"] == pytest.approx(gross - fees)
+    assert row["pnl_source"] == "fills"
+
+
+@pytest.mark.parametrize("tp_first", [True, False])
+def test_oversized_exit_on_shared_position_is_taken_from_sibling(tmp_path, tp_first):
+    """2H、4H 同幣同向合成一個倉位：2H 的止損用 TP 前的數量成交（或止損後 2H 剩下的止盈又成交），
+    多平的部分其實是 4H 的數量，要從 4H 扣掉、4H 的止損改小，帳本總數和交易所一致。"""
+    ex = FakeExchange(df=candles([(101, 99, 100)] * 3))
+    tr, sink = make_trader(tmp_path, LiveBroker(ex, ex, Config()), ex)
+    tr.try_open(make_signal(interval="2H"))
+    tr.try_open(make_signal(interval="4H", t=T0 + pd.Timedelta(hours=4)))
+    p2h, p4h = sorted(tr.store.positions.values(), key=lambda p: p["interval"])
+    tp1 = p2h["tp_ids"][0]
+    if tp_first:
+        ex.trigger("", oid=tp1)
+        ex.trigger("", oid=p2h["stop_id"])
+    else:
+        ex.trigger("", oid=p2h["stop_id"])
+        ex.trigger("", oid=tp1)
+    live = ex.positions()[("XUSDT", "LONG")]
+    assert live == pytest.approx(0.625 - 0.156)
+    tr.step_manage(T0 + pd.Timedelta(hours=5))
+    assert list(tr.store.positions) == [p4h["id"]]
+    assert p4h["remaining"] == pytest.approx(live)
+    assert p4h["fills"] == [[pytest.approx(0.156), pytest.approx(96.0)]]
+    assert ex.algo[p4h["stop_id"]]["qty"] == pytest.approx(live)      # 4H 止損數量跟著改小
+    assert sum(o["type"] == "TAKE_PROFIT_MARKET" for o in ex.algo.values()) == 3  # 只剩 4H 的止盈
+    assert any("多平了" in m for m in sink), sink
+    row = tr.store.ledger[-1]
+    assert row["interval"] == "2H" and row["pnl_source"] == "estimate"  # 2H 的訂單平了比自己多：不用成交明細
+
+
+def test_close_with_unknown_result_is_looked_up_before_resending(tmp_path):
+    """超時平倉的市價單結果不明：下一輪先查單，不能再送一次（會平到同幣同向的 4H）。"""
+    from grid_trading.trader.binance import OrderUnknown
+    ex = FakeExchange(df=candles([(101, 99, 100)] * 3))
+    tr, sink = make_trader(tmp_path, LiveBroker(ex, ex, Config()), ex)
+    tr.try_open(make_signal(interval="2H"))
+    tr.try_open(make_signal(interval="4H", t=T0 + pd.Timedelta(hours=4)))
+    real = ex.market_order
+    calls = []
+
+    def flaky(*a, **k):
+        calls.append(k.get("check_first", False))
+        r = real(*a, **k)
+        if len(calls) == 1:
+            raise OrderUnknown("timeout")
+        return r
+
+    ex.market_order = flaky
+    now = T0 + pd.Timedelta(hours=480, minutes=1)   # 2H 超過 240 根，4H 還沒
+    tr.step_manage(now)
+    assert any("管理失敗" in m for m in sink)
+    tr.step_manage(now + pd.Timedelta(minutes=1))
+    assert calls == [False, True]
+    assert len(tr.store.positions) == 1 and tr.store.ledger[-1]["interval"] == "2H"
+    assert ex.positions()[("XUSDT", "LONG")] == pytest.approx(0.625)   # 4H 的數量沒被動到
+
+
+# ---------- 帳本用實際成交 ----------
+def test_ledger_uses_actual_fills_and_commission(tmp_path):
+    ex = FakeExchange(df=candles([(101, 99, 100)] * 3))
+    ex.fee = 0.0002
+    tr, sink = make_trader(tmp_path, LiveBroker(ex, ex, Config()), ex)
+    tr.try_open(make_signal())
+    pos = next(iter(tr.store.positions.values()))
+    ex.trigger("", oid=pos["stop_id"], fill=95.5)   # 止損滑價
+    tr.step_manage(T0 + pd.Timedelta(minutes=30))
+    row = tr.store.ledger[-1]
+    real = 0.625 * (95.5 - 100) - 0.0002 * (0.625 * 100 + 0.625 * 95.5)
+    est = 0.625 * (95.5 - 100) - 0.0005 * (0.625 * 100 + 0.625 * 95.5)
+    assert row["pnl_source"] == "fills" and row["pnl"] == pytest.approx(real)
+    assert row["pnl_est"] == pytest.approx(est)
+    assert row["r"] == pytest.approx(real / 2.5)
+
+
+def test_ledger_falls_back_to_estimate(tmp_path):
+    ex = FakeExchange(df=candles([(101, 99, 100)] * 3))
+    tr, sink = make_trader(tmp_path, LiveBroker(ex, ex, Config()), ex)
+    tr.try_open(make_signal(interval="2H"))
+    tr.try_open(make_signal(interval="4H", t=T0 + pd.Timedelta(hours=4)))
+    p2h, p4h = sorted(tr.store.positions.values(), key=lambda p: p["interval"])
+    del p4h["entry_order"]                           # 舊狀態檔的單：沒有進場單 id
+
+    def broken(symbol, order_id):
+        raise RuntimeError("HTTP 500")
+
+    ex.order_trades = broken
+    ex.trigger("", oid=p2h["stop_id"])
+    ex.trigger("", oid=p4h["stop_id"])
+    tr.step_manage(T0 + pd.Timedelta(hours=5))
+    assert not tr.store.positions
+    assert [r["pnl_source"] for r in tr.store.ledger] == ["estimate", "estimate"]
+    assert all("pnl_est" not in r for r in tr.store.ledger)
+    assert tr.store.ledger[0]["pnl"] == pytest.approx(-0.625 * 4 - 0.0005 * 0.625 * 196)
+
+
+# ---------- 槓桿 ----------
+def test_leverage_refused_with_open_position_keeps_entry_and_warns(tmp_path):
+    from grid_trading.trader.binance import BinanceError
+    ex = FakeExchange()
+    calls = []
+
+    def set_lev(s, lev):
+        calls.append(lev)
+        if ex.positions() and lev < 5:
+            raise BinanceError(400, -4161, "Leverage reduction is not supported in Isolated Margin Mode with open positions")
+
+    ex.set_leverage = set_lev
+    tr, sink = make_trader(tmp_path, LiveBroker(ex, ex, Config()), ex)
+    tr.try_open(make_signal(risk=4.0))
+    tr.try_open(make_signal(risk=16.0, interval="4H"))
+    assert calls == [5, 3] and len(tr.store.positions) == 2, sink
+    assert not any("開倉失敗" in m for m in sink)
+    assert any("沿用 5 倍" in m for m in sink), sink
+    assert tr.store.leverage == {"XUSDT": 5}
+
+
+def test_leverage_never_raised_above_what_open_positions_allow(tmp_path):
+    ex = FakeExchange()
+    calls = []
+    ex.set_leverage = lambda s, lev: calls.append(lev)
+    tr, _ = make_trader(tmp_path, LiveBroker(ex, ex, Config()), ex)
+    tr.try_open(make_signal(risk=16.0, interval="4H"))   # 3 倍
+    tr.try_open(make_signal(risk=4.0, interval="2H"))    # 自己可以 5 倍，但 4H 還開著：維持 3 倍
+    assert calls == [3] and len(tr.store.positions) == 2
+    tr.store.positions.clear()
+    tr.try_open(make_signal(risk=4.0, interval="2H", t=T0 + pd.Timedelta(hours=2)))  # 沒有其他倉位：回到 5 倍
+    assert calls == [3, 5]
+
+
+# ---------- 追蹤止損和回測一致 ----------
+def test_trailing_starts_on_tp3_like_tracker(tmp_path):
+    ex = FakeExchange(price=100.0, df=candles([(101, 99, 100)] * 3))
+    tr, sink = make_trader(tmp_path, LiveBroker(ex, ex, Config()), ex)
+    tr.try_open(make_signal())
+    pos = next(iter(tr.store.positions.values()))
+    now = T0 + pd.Timedelta(minutes=30)
+    for _ in range(3):
+        ex.trigger("TAKE_PROFIT_MARKET", 0)
+        tr.step_manage(now)
+    stop = ex.algo[pos["stop_id"]]
+    assert stop["trigger"] == pytest.approx(120 - 8)          # TP3 那根就從 TP3 往回 trail，不等收盤
+    assert stop["qty"] == pytest.approx(0.625 - 3 * 0.156)
+    assert any("追蹤止損移到 112" in m for m in sink)
+
+
+def test_trailing_on_tp3_never_moves_stop_backwards(tmp_path):
+    import dataclasses
+    ex = FakeExchange(price=100.0, df=candles([(101, 99, 100)] * 3))
+    tr, sink = make_trader(tmp_path, LiveBroker(ex, ex, Config()), ex)
+    sig = make_signal()
+    tr.try_open(dataclasses.replace(sig, exit={**sig.exit, "trail": 20.0}))   # 120 − 20 = 100，比 TP1 104 差
+    pos = next(iter(tr.store.positions.values()))
+    now = T0 + pd.Timedelta(minutes=30)
+    for _ in range(3):
+        ex.trigger("TAKE_PROFIT_MARKET", 0)
+        tr.step_manage(now)
+    stop = ex.algo[pos["stop_id"]]
+    assert stop["trigger"] == pytest.approx(104.0)
+    assert stop["qty"] == pytest.approx(0.625 - 3 * 0.156)
+    assert not any("追蹤止損移到" in m for m in sink)
+
+
+def test_stop_move_that_failed_after_tp_is_retried_next_poll(tmp_path):
+    ex = FakeExchange(price=100.0, df=candles([(101, 99, 100)] * 3))
+    broker = LiveBroker(ex, ex, Config())
+    tr, sink = make_trader(tmp_path, broker, ex)
+    tr.try_open(make_signal())
+    pid = next(iter(tr.store.positions))
+    stop_of = lambda: next(o["trigger"] for o in ex.algo.values() if o["type"] == "STOP_MARKET")
+    now = T0 + pd.Timedelta(minutes=30)
+    old_stop = stop_of()
+
+    ex.trigger("TAKE_PROFIT_MARKET", 0)
+    real = ex.conditional_order
+    ex.conditional_order = lambda *a, **k: (_ for _ in ()).throw(ConnectionError("斷線"))
+    tr.step_manage(now)   # TP1 記到了，但移止損時斷線
+    assert tr.store.positions[pid]["tps_hit"] == 1 and stop_of() == old_stop
+    ex.conditional_order = real
+    tr.step_manage(now)   # 下一輪補移到保本，數量也改成剩下的
+    assert stop_of() == pytest.approx(100 * 1.001)
+    stops = [o for o in ex.algo.values() if o["type"] == "STOP_MARKET"]
+    assert len(stops) == 1 and stops[0]["qty"] == pytest.approx(tr.store.positions[pid]["remaining"])
