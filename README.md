@@ -32,6 +32,7 @@ web/              網站前端
 pip install -r requirements.txt
 python signal_server.py            # 開 http://localhost:8000
 python signal_server.py --intervals 4H 2H 60M --keep-days 14   # 加看 1H、顯示 14 天內的訊號
+pip install -r requirements-dev.txt   # 跑測試前安裝（含 pytest、numba）
 python -m pytest                   # 測試
 python signal_backtest.py          # 重跑回測，更新 stats/signal_stats.json（網頁上的勝率/期望值）
 ```
@@ -156,11 +157,12 @@ python -m research.dca_backtest     # 60 條規則 × 分段期間 × 滾動 2/4
 連同網頁一起直接發佈到 GitHub Pages。網址是 `https://dennyhty.github.io/grid-trading/`。
 
 - 第一次要做：到 repo 的 Settings → Pages，Source 選「GitHub Actions」。
-- 2H/4H 剛收盤時先只掃加密貨幣的實盤策略，新訊號約收盤後 1 分鐘就推到 Telegram（`--early-push`），網站約 3～4 分鐘後更新；TP/SL 觸及最多晚 15 分鐘左右更新。
+- 網站每 15 分鐘更新一次；TP/SL 觸及最多晚 15 分鐘左右更新。
 - 派網的行情 API 不允許網頁直接讀，所以網頁上的「現價」改由瀏覽器向 Binance U 本位合約抓公開即時價（每 30 秒），
   和派網價差通常很小；抓不到或差超過 5%（不是同一個商品）時，顯示掃描當下的派網價格。
 - 本機版 `python signal_server.py` 照常可用，網頁會自動判斷是哪一種模式。
-- Telegram 推播：新訊號、TP 觸及、移動止損、出場都會傳到 Telegram（`signal_telegram.py`），網站部署成功後才送，傳過的不重送。
+- Telegram 推播：2026-11-06 起網站不再推播，只有 VPS 上的幣安自動交易程式會推（開倉、TP、移動止損、平倉；用 `signal_telegram.py` 的 `send`）。
+  以下的設定方式是網站推播時期的紀錄；自動交易程式的 token 設在 VPS 的 trader.env。
   設定方式：在 Telegram 找 @BotFather 用 `/newbot` 建一個 Bot 拿到 token，打開自己的 Bot 按「開始」，
   再找 @userinfobot 拿到自己的 Id；然後到 repo 的 Settings → Secrets and variables → Actions 新增
   `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID` 兩個 secret。沒設定就不推。token 不要寫進任何檔案。

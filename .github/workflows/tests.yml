@@ -1,0 +1,34 @@
+# 每個 PR（所有分支）以及推送到 main 與 claude/project-thread-t012rc 時，自動執行測試（python -m pytest）。
+name: 測試
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - claude/project-thread-t012rc
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安裝相依套件
+        run: pip install -r requirements-dev.txt
+
+      - name: 執行測試
+        run: python -m pytest -q
