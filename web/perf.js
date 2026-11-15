@@ -139,12 +139,16 @@
     const ref = bt && bt.books ? bt.books["4H+2H"].metrics : null;
     const lastScan = Math.max(0, ...Object.values(b.processed || {}));
     const stale = Date.now() - (b.updated || 0) > 3 * 3600e3;
+    // 心跳：和 feed 產生的時間比（網站資料每 15 分鐘才更新，和現在比一定過期）；超過 10 分鐘或程式回報有問題就警示
+    const hb = b.heartbeat;
+    const hbBad = hb && (!hb.last_loop || (trader.generated || Date.now()) - hb.last_loop > 600e3 || hb.problem);
+    const hbText = hb ? `<span class="${hbBad ? "chip warn-chip" : ""}">交易程式最後回報：${hb.last_loop ? tw(hb.last_loop) : "—"}${hb.problem ? "（" + h(hb.problem) + "）" : ""}</span>` : "";
     el.innerHTML = `
       <div class="seg small">${modes.map((m) => `<button data-mode="${m}" class="${m === mode ? "on" : ""}">${MODE_LABEL[m]}</button>`).join("")}</div>
       <div class="panel">
         <div class="row-between"><h3>幣安${MODE_LABEL[mode]}</h3>
           <span class="chip ${stale ? "warn-chip" : ""}">${stale ? "紀錄超過 3 小時沒更新" : "運作中"}${b.paused ? "・已暫停開新倉" : ""}</span></div>
-        <p class="muted">紀錄更新 ${b.updated ? tw(b.updated) : "—"}・最後掃描的 K 線收盤 ${lastScan ? tw(lastScan) : "—"}（台北時間）
+        <p class="muted">紀錄更新 ${b.updated ? tw(b.updated) : "—"}・最後掃描的 K 線收盤 ${lastScan ? tw(lastScan) : "—"}（台北時間）${hbText ? "・" + hbText : ""}
         ${mode === "testnet" ? "・測試網是假資金，成交價和流動性跟正式站不完全一樣" : ""}</p>
         ${tiles([
           ["已平倉", `${st.n} 筆`],

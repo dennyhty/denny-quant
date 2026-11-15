@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -61,7 +62,10 @@ def main(argv: list[str]) -> int:
     tg = a.mode != "paper"
     notify = Notifier(LABEL[a.mode], os.environ.get("TELEGRAM_BOT_TOKEN", "") if tg else "",
                       os.environ.get("TELEGRAM_CHAT_ID", "") if tg else "")
+    # systemd 停止服務送的是 SIGTERM：轉成正常結束，atexit 才會把佇列裡還沒送出的推播送完
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     Trader(cfg, data, broker, notify, filters).run(once=a.once)
+    notify.flush()
     return 0
 
 

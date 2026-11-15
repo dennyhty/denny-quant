@@ -1,71 +1,20 @@
-"""把新的訊號通知推到 Telegram。GitHub Actions 每次掃描後執行，分兩步：
+"""Telegram 推播：只剩 send()，由 VPS 上的自動交易（grid_trading/trader/bot.py）呼叫。
+網站（GitHub Actions 的 pages.yml）2026-11-06 起不再推播。
 
-  python signal_telegram.py outbox site/data previous_notifications.json outbox.json [early_sent.json]
-      比對這次和上一次的通知，把新的寫進 outbox.json（網站部署前）。early_sent.json 是掃描時
-      已經搶先送出的通知（signal_snapshot.py --early-push），不再送。
-  python signal_telegram.py send outbox.json
-      網站部署成功後才送出，避免部署失敗、下一次又重送同樣的通知。
-
-Bot Token 和 Chat ID 只從環境變數 TELEGRAM_BOT_TOKEN、TELEGRAM_CHAT_ID 讀
-（放在 GitHub 的 repository secrets），不寫進程式或檔案。沒設定就什麼都不送。
+Bot Token 和 Chat ID 由呼叫的人從環境變數 TELEGRAM_BOT_TOKEN、TELEGRAM_CHAT_ID 讀，不寫進程式或檔案。
 """
 
 from __future__ import annotations
 
 import json
-import os
 import socket
 import sys
 import time
 import urllib.parse
 import urllib.request
-from pathlib import Path
 
 SITE_URL = "https://dennyhty.github.io/grid-trading/"
 MAX_MESSAGES = 30  # 一次最多送幾則，避免洗版；其餘請看網站
-
-
-def _load(path: Path):
-    try:
-        return json.loads(path.read_text())
-    except Exception:
-        return None
-
-
-def _fmt(x: float) -> str:
-    return f"{x:.6g}"
-
-
-def build_outbox(data_dir: Path, previous_path: Path, skip: set[str] | None = None) -> list[str]:
-    """這次新增、而且不是第一次啟動補上的通知，轉成 Telegram 訊息文字。觀察組（策略有 tag）的通知不送。
-    skip：收盤後搶先送過的通知 id（signal_snapshot.py --early-push），不再送一次。"""
-    previous = _load(previous_path)
-    if not previous:
-        return []  # 拿不到上一次的紀錄就不送，免得把舊通知全部重送一遍
-    seen = {n["id"] for n in previous} | (skip or set())
-    notes = _load(data_dir / "notifications.json") or []
-    state = _load(data_dir / "state.json") or {}
-    return [m for _, m in messages(notes, seen, state.get("signals", []), state.get("strategies") or {})]
-
-
-def messages(notes: list[dict], seen: set[str], signals: list[dict], strategies: dict) -> list[tuple[str, str]]:
-    """（通知 id, 訊息文字）：seen 裡沒有、不是第一次啟動補上的、不是觀察組的通知。"""
-    signals = {s["id"]: s for s in signals}
-    observe = {name for name, st in strategies.items() if st.get("tag")}
-    out = []
-    for n in notes:
-        if n["id"] in seen or n.get("initial"):
-            continue
-        strategy = (n["signal_id"].split("|") + ["", "", ""])[2]  # id 是「幣|週期|策略|時間」
-        if n.get("observe") or strategy in observe:
-            continue  # 觀察組（SMC、訂單流、美股/商品的維加斯…）只記錄在網站上，不推播
-        text = n["text"]
-        s = signals.get(n["signal_id"])
-        if n["kind"] == "NEW" and s:
-            tps = " / ".join(f"TP{i} {_fmt(p)}" for i, p in enumerate(s["tps"], 1))
-            text += f"\n止損 {_fmt(s['sl'])}\n{tps}"
-        out.append((n["id"], text))
-    return out
 
 
 def send(messages: list[str], token: str, chat_id: str) -> tuple[int, int]:
@@ -108,31 +57,3 @@ def _retry_after(e: Exception) -> float:
         return min(60.0, float(json.loads(e.read())["parameters"]["retry_after"]) + 1)
     except Exception:
         return 5.0
-
-
-def main(argv: list[str]) -> int:
-    if len(argv) in (5, 6) and argv[1] == "outbox":
-        skip = set(_load(Path(argv[5])) or []) if len(argv) == 6 else set()
-        msgs = build_outbox(Path(argv[2]), Path(argv[3]), skip)
-        Path(argv[4]).write_text(json.dumps(msgs, ensure_ascii=False))
-        print(f"{len(msgs)} 則新通知待送出", file=sys.stderr)
-        return 0
-    if len(argv) == 3 and argv[1] == "send":
-        token, chat_id = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
-        msgs = _load(Path(argv[2])) or []
-        if os.environ.get("TELEGRAM_TEST") == "true":  # 手動執行 workflow 時勾選，確認設定正確
-            msgs.insert(0, "測試訊息：Telegram 推播設定成功，之後有新訊號、TP、止損變動會傳到這裡。")
-        if not token or not chat_id:
-            print("沒有設定 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID，略過 Telegram", file=sys.stderr)
-            return 0
-        if not msgs:
-            return 0
-        sent, failed = send(msgs, token, chat_id)
-        print(f"送出 {sent} 則，失敗 {failed} 則", file=sys.stderr)
-        return 1 if not sent else 0
-    print(__doc__, file=sys.stderr)
-    return 2
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv))
