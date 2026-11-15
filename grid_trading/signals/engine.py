@@ -12,7 +12,6 @@ from pathlib import Path
 import pandas as pd
 
 from .. import indicators as ind
-from ..history import resample
 from ..markets import LABELS as MARKET_LABELS, classify, display_name
 from ..binance_public import BinancePublic, rows_to_frame
 from .strategy import Signal, Strategy
@@ -21,22 +20,10 @@ from .tracker import track
 INTERVAL_MS = {"15M": 900_000, "30M": 1_800_000, "60M": 3_600_000, "2H": 7_200_000, "4H": 14_400_000,
                "8H": 28_800_000, "12H": 43_200_000, "1D": 86_400_000}
 LABEL = {"60M": "1H"}
-# 幣安沒有的週期，用較小的週期合成：週期 → (來源週期, 幾根合一根)。幣安 2H、4H 都有原生 K 線，目前不用合成
-SYNTHETIC: dict[str, tuple[str, int]] = {}
-# 掃描時每個週期抓幾根（沒列的用 1000）。EMA169 用 1000 根暖身已經夠準，一個（幣, 週期）只要一次請求
-SCAN_BARS: dict[str, int] = {}
 
 
 def label(interval: str) -> str:
     return LABEL.get(interval, interval)
-
-
-def synthesize(raw: pd.DataFrame, interval: str) -> pd.DataFrame:
-    """由來源週期的 K 線合成 SYNTHETIC 裡的週期，沿用來源的「沒抓完整」標記。"""
-    df = resample(raw, f"{INTERVAL_MS[interval] // 3_600_000}h", origin="epoch") if len(raw) else raw
-    df.attrs["incomplete"] = raw.attrs.get("incomplete", False)
-    df.attrs["error"] = raw.attrs.get("error", "")
-    return df
 
 
 def _rows_retry(api: BinancePublic, symbol: str, interval: str, limit: int, end: int | None,
@@ -59,9 +46,6 @@ def fetch_klines(api: BinancePublic, symbol: str, interval: str, bars: int = 100
     重試後還是抓不到時，回傳已抓到的部分，並在 df.attrs["incomplete"] 標記 True，
     讓呼叫的人分得出「這個幣歷史本來就短」和「這次沒抓到」。
     """
-    if interval in SYNTHETIC:
-        base, k = SYNTHETIC[interval]
-        return synthesize(fetch_klines(api, symbol, base, bars * k), interval)
     frames = []
     end = None
     incomplete, error = False, ""
@@ -102,7 +86,6 @@ class Engine:
         self.previous: dict[str, dict] = {}
         self.carried = 0
         self.frames: dict[tuple[str, str], pd.DataFrame] = {}  # 這次掃描抓到的 K 線，畫圖和實盤紀錄直接沿用
-        self.prefetched: dict[tuple[str, str], pd.DataFrame] = {}  # 別的 Engine 剛抓好的 K 線，掃描時不再抓一次
         self.strategies = {s.name: s for s in strategies}
         self.symbols = symbols
         self.intervals = intervals
@@ -132,27 +115,9 @@ class Engine:
         return self._local.api
 
     def klines_many(self, jobs: list[tuple[str, str]], bars: int = 1000) -> dict[tuple[str, str], pd.DataFrame]:
-        """同時抓多個（symbol, interval）的 K 線；SCAN_BARS 裡有的週期改用那個根數。prefetched 裡完整的直接用。
-
-        合成的週期改抓來源週期再合成（目前沒有合成的週期）。
-        抓到的來源 K 線也放進回傳結果（例如只掃 2H 時多一個 1H），畫圖和下一次掃描可以直接用。"""
-        need: dict[tuple[str, str], int] = {}  # 實際要抓的（幣, 週期）→ 根數
-        for sym, iv in jobs:
-            base, k = SYNTHETIC.get(iv, (iv, 1))
-            need[(sym, base)] = max(need.get((sym, base), 0), SCAN_BARS.get(iv, bars) * k)
-
-        def get(item):
-            j, n = item
-            df = self.prefetched.get(j)
-            if df is not None and not df.attrs.get("incomplete") and len(df) >= min(n, 500):
-                return df
-            return fetch_klines(self.client(), j[0], j[1], n)
+        """同時抓多個（symbol, interval）的 K 線，每條執行緒各用自己的連線。"""
         with ThreadPoolExecutor(self.workers) as ex:
-            out = dict(zip(need, ex.map(get, need.items())))
-        for sym, iv in jobs:
-            if iv in SYNTHETIC:
-                out[(sym, iv)] = synthesize(out[(sym, SYNTHETIC[iv][0])], iv)
-        return out
+            return dict(zip(jobs, ex.map(lambda j: fetch_klines(self.client(), j[0], j[1], bars), jobs)))
 
     def klines(self, symbol: str, interval: str, bars: int = 1000) -> pd.DataFrame:
         """先用這次掃描抓到的 K 線（省一次請求），沒有才去抓。"""
