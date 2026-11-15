@@ -7,7 +7,7 @@
 網址是 http://VPS的IP:8787/<FEED_TOKEN>/trader.json；token 不對一律回 404。
 把這個網址存成 GitHub 的 Actions secret「TRADER_FEED_URL」，網站每 15 分鐘更新時會抓一次。
 
-輸出只有交易紀錄：持倉（幣、方向、進場價、止損、TP、數量）、已平倉（損益、R）、每個週期掃到哪根 K 線。
+輸出只有交易紀錄（含交易程式的心跳 heartbeat）：持倉（幣、方向、進場價、止損、TP、數量）、已平倉（損益、R）、每個週期掃到哪根 K 線。
 不含金鑰、訂單編號、帳戶設定。未平倉的浮動損益用幣安公開的標記價格估算。
 """
 
@@ -77,6 +77,17 @@ def position(p: dict, prices: dict) -> dict:
     return out
 
 
+def heartbeat(state_dir: Path, mode: str) -> dict | None:
+    """交易程式每輪寫的心跳檔（最後一輪、最後一次管理成功的時間、目前的問題）；沒有或讀不了就是 None。"""
+    try:
+        d = json.loads((state_dir / f"{mode}.heartbeat.json").read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(d, dict):
+        return None
+    return {k: d.get(k) for k in ("last_loop", "last_manage_ok", "problem")}
+
+
 def build(state_dir: Path) -> dict:
     prices = None
     books = {}
@@ -92,6 +103,7 @@ def build(state_dir: Path) -> dict:
             "updated": int(path.stat().st_mtime * 1000),
             "processed": data.get("processed", {}),
             "paused": (state_dir / "pause").exists(),
+            "heartbeat": heartbeat(state_dir, mode),
             "positions": [position(p, prices or {}) for p in data.get("positions", {}).values()],
             "ledger": [{k: x.get(k) for k in ("id", "symbol", "interval", "side", "opened", "closed", "pnl", "r")}
                        for x in data.get("ledger", [])],

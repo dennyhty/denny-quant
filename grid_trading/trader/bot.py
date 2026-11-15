@@ -19,9 +19,13 @@
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
+import os
+import queue
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -43,6 +47,9 @@ ORDER = ("2H", "4H")  # 同一個時間點兩個週期都有訊號時，2H 先�
 MAX_BARS = 240
 LABEL = {"paper": "幣安紙上交易", "testnet": "幣安測試網", "live": "幣安實盤"}
 AUDIT_EVERY = 3600.0  # 多久比對一次交易所倉位和程式記錄（秒）；一次只用一個 positions 請求
+OUTAGE_GRACE = 600.0  # 連續失敗超過幾秒才推警報（短暫斷線不吵人）
+RETRY_PAUSE = 5.0     # 掃描時抓不到 K 線的幣，等幾秒再補抓一次
+BACKUPS_KEEP = 7      # 狀態檔每天備份一份，留幾份
 
 
 @dataclass
@@ -72,34 +79,114 @@ def signal_from(d: dict) -> Signal:
                   d["price"], d["sl"], list(d["tps"]), d["strategy"], d.get("info") or {}, d.get("exit") or {})
 
 
+class StateCorrupt(RuntimeError):
+    """狀態檔壞了而且找不到能用的備份：不能用空狀態開始（已開的倉位會變成沒人管）。"""
+
+
+def _utc_day() -> str:
+    return time.strftime("%Y%m%d", time.gmtime())
+
+
+def _read_state(path: Path) -> dict:
+    """讀狀態檔；不是 JSON 或格式不對就丟 ValueError（UnicodeDecodeError、JSONDecodeError 都是它的子類）。"""
+    data = json.loads(path.read_text())
+    if not (isinstance(data, dict) and isinstance(data.get("positions", {}), dict)
+            and isinstance(data.get("ledger", []), list)):
+        raise ValueError("狀態檔格式不對")
+    return data
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """先寫暫存檔、fsync 後才改名：當機或斷電時不會留下寫到一半的檔案。"""
+    tmp = path.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    tmp.replace(path)
+
+
 class Store:
-    """狀態檔：持倉、已平倉紀錄、每個週期處理到哪根 K 線。每次改完立刻寫檔（先寫暫存檔再改名）。"""
+    """狀態檔：持倉、已平倉紀錄、每個週期處理到哪根 K 線。每次改完立刻寫檔（先寫暫存檔再改名）。
+
+    壞掉的狀態檔會改名保留（.corrupt-時間），改用最新的備份（.bak-YYYYMMDD，每天第一次存檔時寫一份，留 7 份）；
+    發生了什麼放在 notices，由 Trader 啟動時推播。都讀不了就丟 StateCorrupt（原檔不動）。"""
 
     def __init__(self, path: Path):
         self.path = path
+        self.notices: list[str] = []
+        self._last: str | None = None  # 上一次寫進去的內容：沒變就不重寫
+        self._backup_day = ""
         try:
-            data = json.loads(path.read_text())
+            data = _read_state(path)
         except FileNotFoundError:
             data = {}
+        except (ValueError, OSError) as e:
+            data = self._recover(e)
         self.positions: dict[str, dict] = data.get("positions", {})
         self.ledger: list[dict] = data.get("ledger", [])
         self.processed: dict[str, int] = data.get("processed", {})
         self.setup: list[str] = data.get("setup", [])
         self.leverage: dict[str, int] = data.get("leverage", {})
 
+    def backups(self) -> list[Path]:
+        """備份檔，新的在前（檔名帶日期，字串排序就是時間順序）。"""
+        return sorted(self.path.parent.glob(self.path.name + ".bak-*"), reverse=True)
+
+    def _recover(self, err: Exception) -> dict:
+        for bak in self.backups():
+            try:
+                data = _read_state(bak)
+            except (ValueError, OSError):
+                continue
+            kept = self.path.with_name(f"{self.path.name}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}")
+            self.path.replace(kept)  # 壞檔留著給人看，不覆蓋
+            self.notices.append(
+                f"狀態檔 {self.path.name} 壞了（{err}），已改名保留為 {kept.name}，改用備份 {bak.name} 開始。"
+                f"備份是那一天第一次存檔時的內容，之後開的倉、平的倉可能不在裡面，請到幣安核對倉位")
+            return data
+        raise StateCorrupt(f"狀態檔 {self.path} 壞了（{err}），也沒有能用的備份"
+                           f"（{self.path.name}.bak-*）。不能用空狀態開始，否則已開的倉位會沒人管；原檔沒動，請人工處理")
+
     def save(self) -> None:
+        text = json.dumps({"positions": self.positions, "ledger": self.ledger,
+                           "processed": self.processed, "setup": self.setup,
+                           "leverage": self.leverage}, ensure_ascii=False, indent=1)
+        if text == self._last:  # 每分鐘每張單都存一次，沒變就不必重寫
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"positions": self.positions, "ledger": self.ledger,
-                                   "processed": self.processed, "setup": self.setup,
-                                   "leverage": self.leverage}, ensure_ascii=False, indent=1))
-        tmp.replace(self.path)
+        _write_atomic(self.path, text)
+        self._last = text
+        self._daily_backup(text)
+
+    def _daily_backup(self, text: str) -> None:
+        day = _utc_day()
+        if day == self._backup_day:
+            return
+        try:
+            bak = self.path.with_name(f"{self.path.name}.bak-{day}")
+            if not bak.exists():
+                _write_atomic(bak, text)
+            for old in self.backups()[BACKUPS_KEEP:]:
+                old.unlink(missing_ok=True)
+            self._backup_day = day
+        except OSError as e:  # 備份失敗不能影響交易，明天再試
+            print("狀態檔備份失敗:", e, flush=True)
 
 
 class Notifier:
+    """推播：呼叫時只放進佇列，由一條背景執行緒照順序送 Telegram（send 每則要睡 1.1 秒、Telegram 慢時一則可能卡 20 秒，
+    不能拖住交易迴圈）。stdout 照舊馬上印；sink（測試用）照舊同步。結束前用 flush() 等佇列送完（有上限）。"""
+    MAX_QUEUE = 200
+    FLUSH_WAIT = 30.0
+
     def __init__(self, prefix: str, token: str = "", chat_id: str = "", sink=None):
         self.prefix, self.token, self.chat_id = prefix, token, chat_id
         self.sink = sink  # 測試用：收集訊息
+        self._q: queue.Queue = queue.Queue(self.MAX_QUEUE)
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._atexit = False
 
     def __call__(self, text: str) -> None:
         msg = f"［{self.prefix}］{text}"
@@ -107,11 +194,65 @@ class Notifier:
         if self.sink is not None:
             self.sink.append(msg)
         elif self.token and self.chat_id:
+            self._enqueue(msg)
+
+    def _enqueue(self, msg: str) -> None:
+        with self._lock:
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._worker, name="notifier", daemon=True)
+                self._thread.start()
+            if not self._atexit:
+                atexit.register(self.flush)
+                self._atexit = True
+        try:
+            self._q.put_nowait(msg)
+        except queue.Full:  # Telegram 長時間不通：丟掉新的，stdout 紀錄還在
+            print("Telegram 佇列已滿，訊息只留在紀錄", flush=True)
+
+    def _worker(self) -> None:
+        while True:
+            msg = self._q.get()
             try:
                 from signal_telegram import send
                 send([msg], self.token, self.chat_id)
-            except Exception as e:  # 推播失敗不影響交易
+            except Exception as e:  # 推播失敗不影響交易，也不能讓執行緒死掉
                 print("Telegram 失敗:", e, flush=True)
+            finally:
+                self._q.task_done()
+
+    def flush(self, timeout: float | None = None) -> bool:
+        """等佇列送完，最多等 timeout 秒（預設 FLUSH_WAIT）。回傳是否送完。"""
+        deadline = time.monotonic() + (self.FLUSH_WAIT if timeout is None else timeout)
+        while self._q.unfinished_tasks and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return self._q.unfinished_tasks == 0
+
+
+class Outage:
+    """連續失敗超過 grace 秒才推一次警報，恢復時推一次「已恢復」（含中斷多久）；同一段中斷不重複推。
+    Telegram 不在幣安上，所以幣安封鎖期間也推得出去。"""
+
+    def __init__(self, label: str, notify, grace: float = OUTAGE_GRACE):
+        self.label, self.notify, self.grace = label, notify, grace
+        self.since: float | None = None
+        self.reason = ""
+        self.alerted = False
+
+    def fail(self, reason: str, now: float) -> None:
+        if self.since is None:
+            self.since = now
+        self.reason = reason
+        if not self.alerted and now - self.since >= self.grace:
+            self.alerted = True
+            self.notify(f"警報：交易程式{self.label}已超過 {self.grace / 60:.0f} 分鐘"
+                        f"（{time.strftime('%H:%M', time.gmtime(self.since))} UTC 起）：{reason}")
+
+    def ok(self, now: float) -> None:
+        if self.since is not None and self.alerted:
+            mins = int((now - self.since) // 60)
+            dur = f"{mins // 60} 小時 {mins % 60} 分鐘" if mins >= 60 else f"{mins} 分鐘"
+            self.notify(f"已恢復：{self.label}，中斷了 {dur}")
+        self.since, self.reason, self.alerted = None, "", False
 
 
 def _pair(sym: str) -> str:
@@ -129,14 +270,42 @@ class Trader:
         self.broker = broker
         self.notify = notify
         self.filters = filters    # 下單的那個交易所（測試網 / 正式站）有的合約
-        self.store = Store(cfg.state_dir / f"{cfg.mode}.json")
+        try:
+            self.store = Store(cfg.state_dir / f"{cfg.mode}.json")
+        except StateCorrupt as e:
+            self._abort_corrupt(e)
         self._audit_at = 0.0  # 上次比對倉位的時間（秒）
+        self._clock = time.time  # 測試可以換掉
+        self._manage_out = Outage("無法管理持倉", notify)
+        self._loop_out = Outage("主迴圈無法正常執行", notify)
+        self.last_loop: float | None = None
+        self.last_manage_ok: float | None = None
         self.strategy = get("vegas_trend")
         self.symbols = {}
         for coin in cfg.coins:
             sym = binance_symbols(coin)[-1]
             if sym in filters:
                 self.symbols[sym] = coin
+
+    def _abort_corrupt(self, err: StateCorrupt) -> None:
+        """狀態檔壞了又沒備份：推播後結束。systemd 每 30 秒重開一次，同一個壞檔只推一次（記在 .alerted）。"""
+        path = self.cfg.state_dir / f"{self.cfg.mode}.json"
+        mark = path.with_name(path.name + ".alerted")
+        try:
+            stamp = str(path.stat().st_mtime_ns)
+            seen = mark.exists() and mark.read_text() == stamp
+        except OSError:
+            stamp, seen = "", False
+        if seen:
+            print(f"啟動中止：{err}", flush=True)
+        else:
+            self.notify(f"啟動中止：{err}")
+            try:
+                mark.write_text(stamp)
+            except OSError:
+                pass
+        getattr(self.notify, "flush", lambda: None)()
+        raise SystemExit(f"啟動中止：{err}") from err
 
     # ---------- 進場 ----------
     def paused(self) -> bool:
@@ -161,13 +330,25 @@ class Trader:
                 df = self.data.klines(sym, interval, self.cfg.bars)
             except Exception as e:
                 print(f"{sym} {interval} K 線失敗: {e}", flush=True)
-                return []
+                return None  # None = 抓不到（和「沒訊號」的 [] 分開）
             closed = df[df["time"] + BAR[interval] <= close].reset_index(drop=True)
             if len(closed) < 250 or closed["time"].iloc[-1] + BAR[interval] != close:
                 return []
             return [s for s in self.strategy.scan(closed, sym, interval, start=len(closed) - 1) if s.time == close]
-        with ThreadPoolExecutor(4) as ex:
-            found = [s for batch in ex.map(one, list(self.symbols)) for s in batch]
+        def scan(syms):
+            with ThreadPoolExecutor(4) as ex:
+                return list(zip(syms, ex.map(one, syms)))
+        res = scan(list(self.symbols))
+        failed = [sym for sym, r in res if r is None]
+        if failed:  # 抓不到的幣補抓一次，不然這根的訊號就永遠漏掉了
+            time.sleep(RETRY_PAUSE)
+            retry = dict(scan(failed))
+            res = [(sym, retry.get(sym, r)) for sym, r in res]
+            failed = [sym for sym, r in res if r is None]
+        if failed:  # 還是抓不到：這根照樣記成已處理（不無限重掃），但要讓人知道漏了誰
+            names = "、".join(_pair(x) for x in failed[:5]) + ("…" if len(failed) > 5 else "")
+            self.notify(f"{interval} 掃描有 {len(failed)} 個幣抓不到 K 線，這根的訊號可能漏掉：{names}")
+        found = [s for _, batch in res for s in batch or []]
         return sorted(found, key=lambda s: s.symbol)
 
     def blocked(self, sig: Signal) -> str:
@@ -235,10 +416,28 @@ class Trader:
             self.store.save()
 
     # ---------- 持倉管理 ----------
+    def _ban_text(self, t: float, e: Exception | None = None) -> str:
+        """被幣安封鎖的說明（含解封時間）；沒被封回空字串。banned_until 在下單 / 查詢用的那個用戶端上。"""
+        until = getattr(getattr(self.broker, "client", None), "banned_until", 0.0)
+        if until > t:
+            return f"被幣安封鎖（HTTP 418），預計 {time.strftime('%H:%M', time.gmtime(until))} UTC 解封"
+        return f"被幣安封鎖（HTTP 418）：{e}" if e is not None else ""
+
+    def _manage_ok(self, t: float) -> None:
+        self.last_manage_ok = t
+        self._manage_out.ok(t)
+
     def step_manage(self, now: pd.Timestamp) -> None:
+        t = self._clock()
         if not self.store.positions:
+            ban = self._ban_text(t)  # 沒持倉也要看：被封時開不了新倉，過了十分鐘要讓人知道
+            if ban:
+                self._manage_out.fail(ban, t)
+            else:
+                self._manage_ok(t)
             return
         self.broker.begin_step()
+        failed = ""  # 這輪第一個管理失敗的原因
         for pid in list(self.store.positions):
             pos = self.store.positions[pid]
             # 同幣同方向的其他單：在交易所上是同一個倉位，這張單的單子多平時要從它們扣
@@ -249,10 +448,12 @@ class Trader:
             except Exception as e:
                 if isinstance(e, BinanceError) and e.status == 418:  # 被封：其餘持倉也一樣會失敗，這輪就到這裡
                     print(f"持倉管理暫停：{e}", flush=True)
+                    self._manage_out.fail(self._ban_text(t, e), t)
                     return
                 msg = f"{_pair(pos['symbol'])} {pos['interval']} 管理失敗：{e}"
                 if isinstance(e, BinanceError):
                     msg += f"（程式記錄剩 {pos.get('remaining'):g}，止損 {pos.get('stop'):.6g}）"
+                failed = failed or msg
                 if pos.get("last_error") != msg:  # 同樣的錯誤只推一次
                     pos["last_error"] = msg
                     self.notify(msg)
@@ -275,6 +476,10 @@ class Trader:
                 self.notify(f"{_pair(pos['symbol'])} {pos['interval']} {_side_text(pos['side'])}已平倉："
                             f"{result:+.4f} USDT（{r:+.2f}R），累計 {cum:+.2f}R")
             self.store.save()
+        if failed:
+            self._manage_out.fail(failed, t)
+        else:
+            self._manage_ok(t)
 
     def step_audit(self, now: pd.Timestamp) -> None:
         """大約每小時比對一次交易所倉位：比程式記錄多（例如下單結果不明、其實成交了）就提醒，同一個差異只提醒一次。"""
@@ -286,9 +491,48 @@ class Trader:
         except Exception as e:  # 查不到就下一小時再查，不影響交易
             print("倉位比對失敗:", e, flush=True)
 
+    def heartbeat_path(self) -> Path:
+        return self.cfg.state_dir / f"{self.cfg.mode}.heartbeat.json"
+
+    def write_heartbeat(self) -> None:
+        """每輪寫一次：最後一輪的時間、最後一次完整管理成功的時間、目前的問題。給 trader_feed 和網站看程式還活著沒。"""
+        problems = [o.reason for o in (self._manage_out, self._loop_out) if o.since is not None]
+        ms = lambda x: None if x is None else int(x * 1000)
+        body = json.dumps({"last_loop": ms(self.last_loop), "last_manage_ok": ms(self.last_manage_ok),
+                           "problem": "；".join(problems) or None}, ensure_ascii=False)
+        try:
+            self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
+            _write_atomic(self.heartbeat_path(), body)
+        except OSError as e:  # 寫不出心跳不能影響交易
+            print("心跳檔寫入失敗:", e, flush=True)
+
+    def run_once(self, now: pd.Timestamp) -> None:
+        """一輪：掃描、管理、比對各自獨立，前面出錯不會害後面的持倉管理被跳過。"""
+        steps = []
+        # 收盤後等一下再抓 K 線，幣安的最後一根才會是完整的
+        if (now - bar_close(now, "2H")) >= pd.Timedelta(seconds=self.cfg.scan_delay):
+            steps.append(("掃描", self.step_entries))
+        steps += [("持倉管理", self.step_manage), ("倉位比對", self.step_audit)]
+        errors = []
+        for name, fn in steps:
+            try:
+                fn(now)
+            except Exception as e:  # 網路斷線之類，下一輪再試
+                print(f"本輪失敗（{name}）:", e, flush=True)
+                errors.append(f"{name}失敗：{e}")
+        t = self._clock()
+        if errors:
+            self._loop_out.fail("；".join(errors), t)
+        else:
+            self._loop_out.ok(t)
+        self.last_loop = t
+        self.write_heartbeat()
+
     def run(self, poll: float | None = None, once: bool = False) -> None:
         poll = self.cfg.poll if poll is None else poll
         self.notify(f"啟動：{len(self.symbols)} 個幣，持倉 {len(self.store.positions)} 張")
+        for text in self.store.notices:  # 狀態檔壞了、改用備份
+            self.notify(text)
         try:
             self.broker.reconcile(self.store, self.notify)
         except Exception as e:  # 啟動檢查出錯不能讓程式當掉重開（每次重開都會推播一次「啟動」）
@@ -296,16 +540,9 @@ class Trader:
         self._audit_at = pd.Timestamp.now(tz="UTC").timestamp()  # 啟動檢查剛比對過
         self.store.save()
         while True:
-            now = pd.Timestamp.now(tz="UTC")
-            try:
-                # 收盤後等一下再抓 K 線，幣安的最後一根才會是完整的
-                if (now - bar_close(now, "2H")) >= pd.Timedelta(seconds=self.cfg.scan_delay):
-                    self.step_entries(now)
-                self.step_manage(now)
-                self.step_audit(now)
-            except Exception as e:  # 網路斷線之類，下一輪再試
-                print("本輪失敗:", e, flush=True)
+            self.run_once(pd.Timestamp.now(tz="UTC"))
             if once:
+                getattr(self.notify, "flush", lambda: None)()  # 單次模式：等推播送完再結束
                 return
             time.sleep(poll)
 

@@ -918,3 +918,330 @@ def test_stop_move_that_failed_after_tp_is_retried_next_poll(tmp_path):
     assert stop_of() == pytest.approx(100 * 1.001)
     stops = [o for o in ex.algo.values() if o["type"] == "STOP_MARKET"]
     assert len(stops) == 1 and stops[0]["qty"] == pytest.approx(tr.store.positions[pid]["remaining"])
+
+
+# ---------- 可靠性：警報、心跳、推播佇列、掃描補抓、狀態檔保護 ----------
+import importlib.util
+import json
+import time
+from pathlib import Path
+
+from grid_trading.trader import bot as botmod
+from grid_trading.trader.binance import BinanceError
+from grid_trading.trader.bot import StateCorrupt, Store
+
+NOW = T0 + pd.Timedelta(minutes=30)
+CLK = 1_800_000_000.0   # 假時鐘的起點（Unix 秒）
+
+
+def _clocked(tmp_path):
+    """有一張持倉的測試網 trader，時鐘可以手動撥。"""
+    ex = FakeExchange(df=candles([(101, 99, 100)] * 3))
+    ex.banned_until = 0.0
+    tr, sink = make_trader(tmp_path, LiveBroker(ex, ex, Config()), ex)
+    tr.try_open(make_signal())
+    sink.clear()
+    clock = [CLK]
+    tr._clock = lambda: clock[0]
+    return tr, ex, sink, clock
+
+
+def _break_exchange(ex, exc):
+    def boom(*a, **k):
+        raise exc
+    ex.open_conditionals = boom
+
+
+def test_ban_alert_once_after_grace_then_recovered(tmp_path):
+    tr, ex, sink, clock = _clocked(tmp_path)
+    ex.banned_until = CLK + 3600
+    _break_exchange(ex, BinanceError(418, -1003, "被幣安暫時封鎖"))
+    for dt in (0, 300, 599):
+        clock[0] = CLK + dt
+        tr.run_once(NOW)
+    assert not any("警報" in m for m in sink)
+    for dt in (601, 660, 900):  # 超過 10 分鐘只推一次
+        clock[0] = CLK + dt
+        tr.run_once(NOW)
+    alerts = [m for m in sink if "警報" in m]
+    assert len(alerts) == 1 and "418" in alerts[0] and "UTC 解封" in alerts[0]
+    hb = json.loads((tmp_path / "testnet.heartbeat.json").read_text())
+    assert "418" in hb["problem"] and hb["last_manage_ok"] is None and hb["last_loop"] == int((CLK + 900) * 1000)
+    # 恢復：推一次「已恢復」和中斷多久，心跳的問題清掉
+    del ex.open_conditionals
+    ex.banned_until = 0.0
+    clock[0] = CLK + 1260
+    tr.run_once(NOW)
+    clock[0] = CLK + 1320
+    tr.run_once(NOW)
+    rec = [m for m in sink if "已恢復" in m]
+    assert len(rec) == 1 and "21 分鐘" in rec[0]
+    hb = json.loads((tmp_path / "testnet.heartbeat.json").read_text())
+    assert hb["problem"] is None and hb["last_manage_ok"] == int((CLK + 1320) * 1000)
+
+
+def test_short_outage_is_silent(tmp_path):
+    tr, ex, sink, clock = _clocked(tmp_path)
+    _break_exchange(ex, RuntimeError("斷線"))
+    tr.step_manage(NOW)
+    del ex.open_conditionals
+    clock[0] = CLK + 120
+    tr.step_manage(NOW)
+    assert not any("警報" in m or "已恢復" in m for m in sink)
+
+
+def test_repeated_manage_failure_alerts_with_reason(tmp_path):
+    tr, ex, sink, clock = _clocked(tmp_path)
+    _break_exchange(ex, RuntimeError("斷線了"))
+    for dt in (0, 400, 700, 800):
+        clock[0] = CLK + dt
+        tr.step_manage(NOW)
+    alerts = [m for m in sink if "警報" in m]
+    assert len(alerts) == 1 and "斷線了" in alerts[0]
+
+
+def test_scan_failure_does_not_skip_manage_and_alerts(tmp_path):
+    tr, ex, sink, clock = _clocked(tmp_path)
+
+    def bad(now):
+        raise RuntimeError("掃描炸了")
+    tr.step_entries = bad
+    for dt in (0, 700):
+        clock[0] = CLK + dt
+        tr.run_once(NOW)
+    assert tr.last_manage_ok == CLK + 700   # 掃描失敗，持倉管理照跑
+    alerts = [m for m in sink if "警報" in m]
+    assert len(alerts) == 1 and "掃描炸了" in alerts[0]
+    tr.step_entries = lambda now: None
+    clock[0] = CLK + 760
+    tr.run_once(NOW)
+    assert sum("已恢復" in m for m in sink) == 1
+
+
+def test_heartbeat_file_written_each_loop(tmp_path):
+    tr, ex, sink, clock = _clocked(tmp_path)
+    tr.run_once(NOW)
+    hb = json.loads((tmp_path / "testnet.heartbeat.json").read_text())
+    assert hb == {"last_loop": int(CLK * 1000), "last_manage_ok": int(CLK * 1000), "problem": None}
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_feed_includes_heartbeat_or_null(tmp_path):
+    spec = importlib.util.spec_from_file_location("trader_feed", Path(__file__).parent.parent / "deploy" / "trader_feed.py")
+    feed = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(feed)
+    (tmp_path / "testnet.json").write_text(json.dumps({"positions": {}, "ledger": [], "processed": {}}))
+    (tmp_path / "paper.json").write_text(json.dumps({"positions": {}, "ledger": [], "processed": {}}))
+    (tmp_path / "testnet.heartbeat.json").write_text(json.dumps(
+        {"last_loop": 5, "last_manage_ok": 4, "problem": "x", "extra": 1}))
+    books = feed.build(tmp_path)["books"]
+    assert books["testnet"]["heartbeat"] == {"last_loop": 5, "last_manage_ok": 4, "problem": "x"}
+    assert books["paper"]["heartbeat"] is None
+    (tmp_path / "paper.heartbeat.json").write_text("{壞")
+    assert feed.build(tmp_path)["books"]["paper"]["heartbeat"] is None
+
+
+# ---------- Notifier 佇列 ----------
+def _fake_send(monkeypatch, delay=0.0, fail_first=False):
+    import signal_telegram
+    got, state = [], {"n": 0}
+
+    def send(messages, token, chat_id):
+        state["n"] += 1
+        time.sleep(delay)
+        if fail_first and state["n"] == 1:
+            raise RuntimeError("Telegram 掛了")
+        got.extend(messages)
+        return len(messages), 0
+    monkeypatch.setattr(signal_telegram, "send", send)
+    return got
+
+
+def test_notifier_queues_in_order_without_blocking(monkeypatch):
+    got = _fake_send(monkeypatch, delay=0.2)
+    n = Notifier("p", "tok", "chat")
+    t0 = time.monotonic()
+    for i in range(3):
+        n(f"m{i}")
+    assert time.monotonic() - t0 < 0.3   # 呼叫端不等 Telegram
+    assert n.flush(5) and got == ["［p］m0", "［p］m1", "［p］m2"]
+
+
+def test_notifier_survives_failing_send(monkeypatch):
+    got = _fake_send(monkeypatch, fail_first=True)
+    n = Notifier("p", "tok", "chat")
+    n("a")
+    n("b")
+    assert n.flush(5) and got == ["［p］b"]
+    assert n._thread.is_alive()
+
+
+def test_notifier_flush_is_bounded(monkeypatch):
+    _fake_send(monkeypatch, delay=1.0)
+    n = Notifier("p", "tok", "chat")
+    n("a")
+    t0 = time.monotonic()
+    assert n.flush(0.2) is False and time.monotonic() - t0 < 0.8
+    n.flush(5)
+
+
+def test_notifier_sink_stays_synchronous():
+    sink = []
+    Notifier("p", "tok", "chat", sink=sink)("x")
+    assert sink == ["［p］x"]
+
+
+def test_run_once_mode_flushes_notifier(tmp_path, monkeypatch):
+    got = _fake_send(monkeypatch, delay=0.1)
+    ex = FakeExchange()
+    cfg = Config(mode="testnet", state_dir=tmp_path, coins=["X"])
+    tr = Trader(cfg, ex, LiveBroker(ex, ex, cfg), Notifier("t", "tok", "chat"), {"XUSDT": F})
+    tr.run(once=True)
+    assert got and "啟動" in got[0]   # run 回來前已經送完
+
+
+# ---------- 掃描補抓 ----------
+def _scan_trader(tmp_path, monkeypatch, bad):
+    monkeypatch.setattr(botmod, "RETRY_PAUSE", 0)
+    calls = {}
+
+    class Data:
+        def klines(self, symbol, interval, limit=500):
+            calls[symbol] = calls.get(symbol, 0) + 1
+            if bad(symbol, calls[symbol]):
+                raise RuntimeError("timeout")
+            return candles([(101, 99, 100)] * 3)   # 不到 250 根：沒訊號
+    ex = FakeExchange()
+    tr, sink = make_trader(tmp_path, LiveBroker(ex, ex, Config()), ex)
+    tr.data = Data()
+    tr.symbols = {f"S{i}USDT": f"S{i}" for i in range(7)}
+    return tr, sink, calls
+
+
+def test_scan_retries_failed_symbols_once(tmp_path, monkeypatch):
+    tr, sink, calls = _scan_trader(tmp_path, monkeypatch, lambda s, n: s == "S3USDT" and n == 1)
+    tr.find_signals("2H", T0)
+    assert calls["S3USDT"] == 2 and calls["S0USDT"] == 1 and not sink
+
+
+def test_scan_notifies_once_with_count_and_five_names(tmp_path, monkeypatch):
+    tr, sink, calls = _scan_trader(tmp_path, monkeypatch, lambda s, n: s != "S0USDT")
+    tr.store.processed = {"2H": int((T0 - pd.Timedelta(hours=2)).timestamp() * 1000), "4H": int(T0.timestamp() * 1000)}
+    tr.step_entries(T0 + pd.Timedelta(minutes=1))
+    assert all(c == 2 for s, c in calls.items() if s != "S0USDT")   # 只補抓一次
+    assert len(sink) == 1 and "6 個幣" in sink[0] and sink[0].count("/USDT") == 5
+    assert tr.store.processed["2H"] == int(T0.timestamp() * 1000)   # 照樣記成已處理
+
+
+# ---------- 狀態檔保護 ----------
+def _saved_store(path, day, monkeypatch, mark="a"):
+    monkeypatch.setattr(botmod, "_utc_day", lambda: day)
+    st = Store(path)
+    st.processed["2H"] = ord(mark)
+    st.save()
+    return st
+
+
+def test_store_daily_backup_keeps_seven(tmp_path, monkeypatch):
+    path = tmp_path / "t.json"
+    st = _saved_store(path, "20261101", monkeypatch)
+    st.processed["4H"] = 1
+    st.save()   # 同一天第二次存檔：不再備份
+    assert [p.name for p in st.backups()] == ["t.json.bak-20261101"]
+    assert json.loads((tmp_path / "t.json.bak-20261101").read_text())["processed"] == {"2H": 97}
+    for d in range(2, 10):
+        monkeypatch.setattr(botmod, "_utc_day", lambda d=d: f"2026110{d}")
+        st.processed["2H"] = d
+        st.save()
+    names = [p.name for p in st.backups()]
+    assert len(names) == 7 and names[0] == "t.json.bak-20261109" and names[-1] == "t.json.bak-20261103"
+
+
+def test_store_corrupt_uses_newest_backup_and_keeps_bad_file(tmp_path, monkeypatch):
+    path = tmp_path / "t.json"
+    _saved_store(path, "20261101", monkeypatch)
+    (tmp_path / "t.json.bak-20261102").write_text(json.dumps({"positions": {"p": {"symbol": "X"}}}))
+    (tmp_path / "t.json.bak-20261103").write_text("{壞")   # 最新的備份也壞：往前找
+    path.write_text('{"positions": {"p"')
+    st = Store(path)
+    assert "p" in st.positions and len(st.notices) == 1 and "t.json.bak-20261102" in st.notices[0]
+    kept = list(tmp_path.glob("t.json.corrupt-*"))
+    assert len(kept) == 1 and kept[0].read_text() == '{"positions": {"p"'
+    assert not path.exists()
+    st.save()   # 還原後第一次存檔一定寫回正式檔
+    assert json.loads(path.read_text())["positions"] == {"p": {"symbol": "X"}}
+
+
+def test_store_corrupt_without_backup_refuses_empty_state(tmp_path):
+    path = tmp_path / "t.json"
+    path.write_text("")
+    with pytest.raises(StateCorrupt):
+        Store(path)
+    assert path.read_text() == ""   # 原檔不動，下次重開還是會擋住
+    path.write_text("[1, 2]")       # 不是物件也算壞
+    with pytest.raises(StateCorrupt):
+        Store(path)
+
+
+def test_trader_notifies_and_exits_on_unrecoverable_state_once(tmp_path):
+    (tmp_path / "testnet.json").write_text("{壞")
+    ex = FakeExchange()
+    sink = []
+    cfg = Config(mode="testnet", state_dir=tmp_path, coins=["X"])
+    with pytest.raises(SystemExit):
+        Trader(cfg, ex, LiveBroker(ex, ex, cfg), Notifier("t", sink=sink), {"XUSDT": F})
+    assert len(sink) == 1 and "不能用空狀態" in sink[0]
+    with pytest.raises(SystemExit):   # systemd 重開：同一個壞檔不再重複推播
+        Trader(cfg, ex, LiveBroker(ex, ex, cfg), Notifier("t", sink=sink), {"XUSDT": F})
+    assert len(sink) == 1
+
+
+def test_trader_run_tells_user_about_backup_recovery(tmp_path, monkeypatch):
+    monkeypatch.setattr(botmod, "_utc_day", lambda: "20261101")
+    (tmp_path / "testnet.json.bak-20261101").write_text(json.dumps({"positions": {}, "processed": {"2H": 1}}))
+    (tmp_path / "testnet.json").write_text("{壞")
+    ex = FakeExchange()
+    tr, sink = make_trader(tmp_path, LiveBroker(ex, ex, Config()), ex)
+    tr.run(once=True)
+    assert any("改用備份" in m for m in sink)
+    assert json.loads((tmp_path / "testnet.json").read_text())["processed"]["2H"] == 1
+
+
+def test_store_fsyncs_tmp_before_rename(tmp_path, monkeypatch):
+    path = tmp_path / "t.json"
+    path.write_text(json.dumps({"processed": {"2H": 1}}))
+    st = Store(path)
+    seen = []
+    real = botmod.os.fsync
+    monkeypatch.setattr(botmod.os, "fsync", lambda fd: (seen.append((path.read_text(), (tmp_path / "t.tmp").exists())), real(fd)))
+    st.processed["2H"] = 2
+    st.save()
+    assert json.loads(seen[0][0])["processed"]["2H"] == 1 and seen[0][1]   # 改名前：舊檔還在、暫存檔已存在
+    assert json.loads(path.read_text())["processed"]["2H"] == 2
+
+
+def test_store_skips_rewrite_when_unchanged_but_writes_every_change(tmp_path, monkeypatch):
+    writes = []
+    real = botmod._write_atomic
+    monkeypatch.setattr(botmod, "_write_atomic", lambda p, t: (writes.append(p.name), real(p, t)))
+    st = Store(tmp_path / "t.json")
+    st.save()
+    st.save()
+    assert writes.count("t.json") == 1
+    st.positions["a"] = {"x": 1}
+    st.save()
+    st.positions["a"]["x"] = 2   # 巢狀內容改了也要寫
+    st.save()
+    assert writes.count("t.json") == 3
+    assert json.loads((tmp_path / "t.json").read_text())["positions"]["a"]["x"] == 2
+
+
+def test_step_manage_does_not_rewrite_unchanged_state(tmp_path, monkeypatch):
+    tr, ex, sink, clock = _clocked(tmp_path)
+    tr.step_manage(NOW)
+    writes = []
+    real = botmod._write_atomic
+    monkeypatch.setattr(botmod, "_write_atomic", lambda p, t: (writes.append(p.name), real(p, t)))
+    tr.step_manage(NOW)
+    tr.step_manage(NOW)
+    assert "testnet.json" not in writes
