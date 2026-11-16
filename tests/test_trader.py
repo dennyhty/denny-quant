@@ -1274,29 +1274,24 @@ def test_binance_ban_survives_restart_and_blocks_unsigned_requests(monkeypatch, 
 
 
 def test_testnet_418_on_shared_gateway_only_pauses_that_path(monkeypatch, capsys):
-    import socket
     bmod, client, Sess, _ = _client_with(418, "29384", monkeypatch)
-    monkeypatch.setattr(bmod, "_FAMILY", [None])
-    monkeypatch.setattr(bmod.time, "sleep", lambda s: None)
     resp_cls = type(Sess().request())
     resp_cls.text = '{"code":-1003,"msg":"Way too many requests; IP(15.158.242.104) banned until 1794862858699."}'
     # 沒開這個判斷（正式站）：照 Retry-After 停，所有請求都停
     with pytest.raises(bmod.BinanceError):
         client.positions()
     assert client.banned_until > bmod.time.time() + 29000
-    # 測試網、幣安回報用量 0：被封的是共用節點。換 IPv4 / IPv6 各再試一次，還是不行就只停這個路徑 60 秒
+    # 測試網、幣安回報用量 0：被封的是共用節點。原樣重送幾次，還是不行就只停這個路徑 60 秒
     resp_cls.headers = {"Retry-After": "29384", "x-mbx-used-weight-1m": "0"}
     client.banned_until, client.shared_ban_pause = 0.0, 60.0
     Sess.calls = 0
     with pytest.raises(bmod.BinanceError):
         client.positions()
-    assert Sess.calls == 3
+    assert Sess.calls == 1 + bmod.SHARED_BAN_RETRIES
     assert client.banned_until == 0.0  # 其他路徑照送
     assert list(client._path_pause) == ["/fapi/v2/positionRisk"]
     assert bmod.time.time() + 50 < client._path_pause["/fapi/v2/positionRisk"] < bmod.time.time() + 70
-    assert bmod._FAMILY[0] in (socket.AF_INET, socket.AF_INET6)
-    out = capsys.readouterr().out
-    assert "共用節點 15.158.242.104" in out and "改用 IPv4 馬上再試" in out
+    assert "共用節點 15.158.242.104" in capsys.readouterr().out
     Sess.calls = 0
     with pytest.raises(bmod.BinanceError):
         client.positions()  # 暫停期間這個路徑不送
@@ -1307,3 +1302,28 @@ def test_testnet_418_on_shared_gateway_only_pauses_that_path(monkeypatch, capsys
     with pytest.raises(bmod.BinanceError):
         client.positions()
     assert client.banned_until > bmod.time.time() + 29000
+
+
+def test_testnet_shared_gateway_418_retry_gets_through(monkeypatch, capsys):
+    """共用節點的封鎖時好時壞：被擋兩次、第三次成功，呼叫的人拿到正常結果，紀錄不吵。"""
+    bmod, client, Sess, _ = _client_with(418, "29384", monkeypatch)
+    resp_cls = type(Sess().request())
+    resp_cls.headers = {"Retry-After": "29384", "x-mbx-used-weight-1m": "0"}
+    resp_cls.text = '{"code":-1003,"msg":"Way too many requests; IP(15.158.242.104) banned until 1794862858699."}'
+    client.shared_ban_pause = 60.0
+    Sess.calls = 0
+
+    class Ok:
+        status_code, headers, text = 200, {}, "[]"
+
+        def json(self):
+            return []
+
+    def request(self, *a, **k):
+        Sess.calls += 1
+        return resp_cls() if Sess.calls <= 2 else Ok()
+
+    monkeypatch.setattr(Sess, "request", request)
+    client.positions()  # 不丟錯誤
+    assert Sess.calls == 3 and not client._path_pause and client.banned_until == 0.0
+    assert capsys.readouterr().out == ""
