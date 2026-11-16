@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import re
+import socket
 import time
 import urllib.parse
 from collections import Counter, deque
@@ -19,6 +20,14 @@ from pathlib import Path
 
 import pandas as pd
 import requests
+
+import urllib3.util.connection as _u3conn
+
+# 連線要走 IPv4 還是 IPv6：None = 照系統預設（有 IPv6 就先用 IPv6）。測試網的共用節點被封時輪流換（見 _shared_ban）。
+_FAMILY: list = [None]
+_default_family = _u3conn.allowed_gai_family
+_u3conn.allowed_gai_family = lambda: _FAMILY[0] if _FAMILY[0] is not None else _default_family()
+_FAMILY_NAME = {None: "系統預設", socket.AF_INET: "IPv4", socket.AF_INET6: "IPv6"}
 
 MAINNET = "https://fapi.binance.com"
 TESTNET = "https://testnet.binancefuture.com"
@@ -64,6 +73,7 @@ class BinanceFutures:
         self.shared_ban_pause = shared_ban_pause  # 測試網：被封的是共用轉送節點時只停這麼多秒（見 _shared_ban）
         self.banned_until = self._load_ban()
         self._offset = 0  # 本機時間和幣安伺服器時間的差（毫秒），簽名用
+        self._path_pause: dict[str, float] = {}  # 路徑 → 暫停到什麼時候（測試網共用節點被封時只停那個路徑）
         self._recent: deque = deque(maxlen=600)  # 最近送出的請求（時間, 方法, 路徑）：被擋時印出來，查是不是真的送太多
 
     # ---------- 底層 ----------
@@ -81,6 +91,9 @@ class BinanceFutures:
         if time.time() < self.banned_until:
             # 被封期間再送請求只會把封鎖拉長，直接失敗，讓上層記一行就好
             raise BinanceError(418, -1003, f"被幣安暫時封鎖，{self.banned_until - time.time():.0f} 秒後才會再送請求")
+        if time.time() < self._path_pause.get(path, 0.0):
+            raise BinanceError(418, -1003, f"{path} 走到的共用節點被封，"
+                                           f"{self._path_pause[path] - time.time():.0f} 秒後才會再送這個請求")
         for i in range(tries):
             q = dict(params)
             if signed:
@@ -95,6 +108,10 @@ class BinanceFutures:
             try:
                 resp = (session or self.session).request(method, self.base + path, params=q, headers=headers, timeout=self.timeout)
             except requests.RequestException as e:
+                if _FAMILY[0] is not None and isinstance(e, requests.ConnectionError):
+                    # 指定的 IPv4 / IPv6 連不上（主機可能沒有那一種位址）：改回系統預設
+                    print(f"用 {_FAMILY_NAME[_FAMILY[0]]} 連不上幣安，改回系統預設", flush=True)
+                    _FAMILY[0] = None
                 if not resend and not isinstance(e, requests.ConnectTimeout):
                     raise OrderUnknown(f"{path} 送出後沒有回應：{e}") from e
                 if i == tries - 1:
@@ -109,21 +126,30 @@ class BinanceFutures:
                     ban = 120.0
                 shared = self._shared_ban(resp)
                 if shared:
-                    # 被封的是測試網前面共用的轉送節點，不是我們：只停一小段，換一條連線再試（見 _shared_ban）
-                    self.banned_until = time.time() + self.shared_ban_pause
+                    # 被封的是測試網前面共用的轉送節點，不是我們（見 _shared_ban）。2026-11-16 部署後看到：
+                    # 只有條件單的路徑（algoOrder、openAlgoOrders）被擋，持倉、listenKey 照常，而且重新連線還是走到同一個節點。
+                    # 所以 (1) 換另一種位址（IPv4 ↔ IPv6）重新連線，馬上再試一次；(2) 還是被擋就只停這一個路徑，其他請求照送。
+                    used = _FAMILY_NAME[_FAMILY[0]]
+                    _FAMILY[0] = socket.AF_INET if _FAMILY[0] in (None, socket.AF_INET6) else socket.AF_INET6
                     for sess in (self.session, self.stream_session):
                         try:
-                            sess.close()  # 關掉連線，下一個請求重新連，有機會換到沒被封的節點
+                            sess.close()
                         except Exception:
                             pass
-                else:
-                    # 多等 BAN_MARGIN 秒才再送，免得剛好在解封前一刻送出
-                    self.banned_until = time.time() + ban + BAN_MARGIN
+                    retry = i < tries - 1
+                    print(f"幣安回 418（{path}，用 {used} 連線），Retry-After={raw}，被封的是共用節點 {shared}（我們的用量很低），"
+                          + (f"改用 {_FAMILY_NAME[_FAMILY[0]]} 馬上再試" if retry
+                             else f"這個路徑暫停 {self.shared_ban_pause:.0f} 秒，下次改用 {_FAMILY_NAME[_FAMILY[0]]}"), flush=True)
+                    print(self._diagnose(method, path, q, resp), flush=True)
+                    if retry:
+                        continue
+                    self._path_pause[path] = time.time() + self.shared_ban_pause
+                    raise BinanceError(418, -1003, f"{path} 走到的共用節點被封，{self.shared_ban_pause:.0f} 秒後再試")
+                # 多等 BAN_MARGIN 秒才再送，免得剛好在解封前一刻送出
+                self.banned_until = time.time() + ban + BAN_MARGIN
                 self._save_ban()
                 until = time.strftime("%H:%M", time.gmtime(self.banned_until))
-                print(f"幣安回 418（{path}），Retry-After={raw}，"
-                      + (f"被封的是共用節點 {shared}（我們的用量很低），只暫停到 {until} UTC" if shared
-                         else f"暫停送請求到 {until} UTC"), flush=True)
+                print(f"幣安回 418（{path}），Retry-After={raw}，暫停送請求到 {until} UTC", flush=True)
                 print(self._diagnose(method, path, q, resp), flush=True)
                 raise BinanceError(418, -1003, f"被幣安暫時封鎖到 {until} UTC")
             if resp.status_code >= 500 and not resend:
