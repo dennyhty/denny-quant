@@ -1271,3 +1271,27 @@ def test_binance_ban_survives_restart_and_blocks_unsigned_requests(monkeypatch, 
     with pytest.raises(bmod.BinanceError):
         again.klines("BTCUSDT", "2H")   # 不簽名的請求在封鎖期間也不送
     assert Sess.calls == calls
+
+
+def test_testnet_418_on_shared_gateway_only_pauses_briefly(monkeypatch, capsys):
+    bmod, client, Sess, _ = _client_with(418, "29384", monkeypatch)
+    resp_cls = type(Sess().request())
+    resp_cls.text = '{"code":-1003,"msg":"Way too many requests; IP(15.158.242.104) banned until 1794862858699."}'
+    Sess.calls = 0
+    # 沒開這個判斷（正式站）：照 Retry-After 停
+    with pytest.raises(bmod.BinanceError):
+        client.positions()
+    assert client.banned_until > bmod.time.time() + 29000
+    # 測試網、幣安回報用量 0：被封的是共用節點，只停一分鐘
+    resp_cls.headers = {"Retry-After": "29384", "x-mbx-used-weight-1m": "0"}
+    client.banned_until, client.shared_ban_pause = 0.0, 60.0
+    with pytest.raises(bmod.BinanceError):
+        client.positions()
+    assert bmod.time.time() + 50 < client.banned_until < bmod.time.time() + 70
+    assert "共用節點 15.158.242.104" in capsys.readouterr().out
+    # 用量真的很高：是我們自己的問題，照 Retry-After 停
+    resp_cls.headers = {"Retry-After": "29384", "x-mbx-used-weight-1m": "2300"}
+    client.banned_until = 0.0
+    with pytest.raises(bmod.BinanceError):
+        client.positions()
+    assert client.banned_until > bmod.time.time() + 29000

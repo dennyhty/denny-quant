@@ -32,6 +32,7 @@ def clean_id(client_id: str | None) -> str | None:
 
 MAX_WAIT = 30   # 被限流時單次最多等幾秒
 BAN_MARGIN = 120  # 418 的 Retry-After 到了以後再多等幾秒才送請求
+SHARED_BAN_MAX_WEIGHT = 240  # 幣安回報的每分鐘用量在這以下（上限 2400 的一成）還被 418，不是我們送太多
 NOT_FOUND = -2013   # Order does not exist
 DUPLICATE = -4116   # ClientOrderId is duplicated
 DEAD = ("CANCELED", "EXPIRED", "REJECTED")
@@ -50,7 +51,7 @@ class OrderUnknown(RuntimeError):
 class BinanceFutures:
     def __init__(self, base: str = MAINNET, key: str = "", secret: str = "", timeout: float = 15,
                  session: requests.Session | None = None, stream_session: requests.Session | None = None,
-                 ban_file=None):
+                 ban_file=None, shared_ban_pause: float | None = None):
         self.base = base.rstrip("/")
         self.key, self.secret = key, secret
         self.timeout = timeout
@@ -60,6 +61,7 @@ class BinanceFutures:
         # 418（被封）時，到這個時間為止這個用戶端不再送任何請求（封的是 IP，不簽名的請求也算）。
         # 有給 ban_file 就寫進檔案：程式重開後照樣等到解封，不會一啟動就在封鎖期間送請求、被封得更久
         self.ban_file = Path(ban_file) if ban_file else None
+        self.shared_ban_pause = shared_ban_pause  # 測試網：被封的是共用轉送節點時只停這麼多秒（見 _shared_ban）
         self.banned_until = self._load_ban()
         self._offset = 0  # 本機時間和幣安伺服器時間的差（毫秒），簽名用
         self._recent: deque = deque(maxlen=600)  # 最近送出的請求（時間, 方法, 路徑）：被擋時印出來，查是不是真的送太多
@@ -105,12 +107,23 @@ class BinanceFutures:
                     ban = float(raw)
                 except (TypeError, ValueError):
                     ban = 120.0
-                # 多等 BAN_MARGIN 秒才再送：本機時鐘和幣安差一點、剛好在解封前一刻送出的請求會被當成
-                # 「封鎖期間還在送」而再封一次，而且一次比一次久（2026-11-16 04:43 解封那一刻馬上又被封到 12:38）
-                self.banned_until = time.time() + ban + BAN_MARGIN
+                shared = self._shared_ban(resp)
+                if shared:
+                    # 被封的是測試網前面共用的轉送節點，不是我們：只停一小段，換一條連線再試（見 _shared_ban）
+                    self.banned_until = time.time() + self.shared_ban_pause
+                    for sess in (self.session, self.stream_session):
+                        try:
+                            sess.close()  # 關掉連線，下一個請求重新連，有機會換到沒被封的節點
+                        except Exception:
+                            pass
+                else:
+                    # 多等 BAN_MARGIN 秒才再送，免得剛好在解封前一刻送出
+                    self.banned_until = time.time() + ban + BAN_MARGIN
                 self._save_ban()
                 until = time.strftime("%H:%M", time.gmtime(self.banned_until))
-                print(f"幣安回 418（{path}），Retry-After={raw}，暫停送簽名請求到 {until} UTC", flush=True)
+                print(f"幣安回 418（{path}），Retry-After={raw}，"
+                      + (f"被封的是共用節點 {shared}（我們的用量很低），只暫停到 {until} UTC" if shared
+                         else f"暫停送請求到 {until} UTC"), flush=True)
                 print(self._diagnose(method, path, q, resp), flush=True)
                 raise BinanceError(418, -1003, f"被幣安暫時封鎖到 {until} UTC")
             if resp.status_code >= 500 and not resend:
@@ -143,6 +156,25 @@ class BinanceFutures:
                 raise BinanceError(resp.status_code, code, (data.get("msg") if isinstance(data, dict) else "") or "")
             return data
         raise RuntimeError("unreachable")
+
+    def _shared_ban(self, resp) -> str:
+        """這個 418 是不是「別人害的」：回傳被封的 IP（是），或空字串（不是 / 沒開這個判斷）。
+
+        幣安測試網前面有一層轉送（CloudFront），限流是照轉送節點的 IP 算的，同一個節點上所有人共用額度。
+        2026-11-16 的診斷：我們一分鐘只送 3 個請求、幣安回報用量 x-mbx-used-weight-1m = 0，卻回
+        「IP(15.158.242.104) banned」，那個 IP 是轉送節點不是 VPS；而且同一段「封鎖」期間別的請求照樣成功。
+        這種封鎖照 Retry-After 停好幾個小時沒有意義，停 shared_ban_pause 秒、換一條連線再試就好。
+        只在有設 shared_ban_pause（測試網）而且幣安回報的用量很低時才這樣判斷；正式站一律照 Retry-After 停。"""
+        if not self.shared_ban_pause:
+            return ""
+        try:
+            used = int(resp.headers.get("x-mbx-used-weight-1m"))
+        except (TypeError, ValueError):
+            return ""
+        if used > SHARED_BAN_MAX_WEIGHT:
+            return ""
+        m = re.search(r"IP\(([0-9a-fA-F.:]+)\)", str(getattr(resp, "text", "")))
+        return m.group(1) if m else "（回應沒寫 IP）"
 
     def _load_ban(self) -> float:
         try:

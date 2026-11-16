@@ -62,7 +62,9 @@ def main(argv: list[str]) -> int:
             print("沒有設定 BINANCE_API_KEY / BINANCE_API_SECRET", file=sys.stderr)
             return 2
         venue = BinanceFutures(TESTNET if a.mode == "testnet" else MAINNET, key, secret,
-                               ban_file=a.state_dir / f"{a.mode}.ban")
+                               ban_file=a.state_dir / f"{a.mode}.ban",
+                               # 測試網的 418 多半是共用轉送節點被別人用爆，不是我們：停一分鐘就再試（正式站照幣安給的時間停）
+                               shared_ban_pause=60.0 if a.mode == "testnet" else None)
         wait = venue.banned_until - time.time()
         if wait > 0:  # 上次被幣安封鎖還沒解封：等到解封才開始，封鎖期間送請求只會被封得更久
             print(f"上次被幣安封鎖（HTTP 418）還沒解封，等 {wait:.0f} 秒"
