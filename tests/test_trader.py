@@ -1273,25 +1273,37 @@ def test_binance_ban_survives_restart_and_blocks_unsigned_requests(monkeypatch, 
     assert Sess.calls == calls
 
 
-def test_testnet_418_on_shared_gateway_only_pauses_briefly(monkeypatch, capsys):
+def test_testnet_418_on_shared_gateway_only_pauses_that_path(monkeypatch, capsys):
+    import socket
     bmod, client, Sess, _ = _client_with(418, "29384", monkeypatch)
+    monkeypatch.setattr(bmod, "_FAMILY", [None])
+    monkeypatch.setattr(bmod.time, "sleep", lambda s: None)
     resp_cls = type(Sess().request())
     resp_cls.text = '{"code":-1003,"msg":"Way too many requests; IP(15.158.242.104) banned until 1794862858699."}'
-    Sess.calls = 0
-    # 沒開這個判斷（正式站）：照 Retry-After 停
+    # 沒開這個判斷（正式站）：照 Retry-After 停，所有請求都停
     with pytest.raises(bmod.BinanceError):
         client.positions()
     assert client.banned_until > bmod.time.time() + 29000
-    # 測試網、幣安回報用量 0：被封的是共用節點，只停一分鐘
+    # 測試網、幣安回報用量 0：被封的是共用節點。換 IPv4 / IPv6 各再試一次，還是不行就只停這個路徑 60 秒
     resp_cls.headers = {"Retry-After": "29384", "x-mbx-used-weight-1m": "0"}
     client.banned_until, client.shared_ban_pause = 0.0, 60.0
+    Sess.calls = 0
     with pytest.raises(bmod.BinanceError):
         client.positions()
-    assert bmod.time.time() + 50 < client.banned_until < bmod.time.time() + 70
-    assert "共用節點 15.158.242.104" in capsys.readouterr().out
+    assert Sess.calls == 3
+    assert client.banned_until == 0.0  # 其他路徑照送
+    assert list(client._path_pause) == ["/fapi/v2/positionRisk"]
+    assert bmod.time.time() + 50 < client._path_pause["/fapi/v2/positionRisk"] < bmod.time.time() + 70
+    assert bmod._FAMILY[0] in (socket.AF_INET, socket.AF_INET6)
+    out = capsys.readouterr().out
+    assert "共用節點 15.158.242.104" in out and "改用 IPv4 馬上再試" in out
+    Sess.calls = 0
+    with pytest.raises(bmod.BinanceError):
+        client.positions()  # 暫停期間這個路徑不送
+    assert Sess.calls == 0
     # 用量真的很高：是我們自己的問題，照 Retry-After 停
     resp_cls.headers = {"Retry-After": "29384", "x-mbx-used-weight-1m": "2300"}
-    client.banned_until = 0.0
+    client._path_pause.clear()
     with pytest.raises(bmod.BinanceError):
         client.positions()
     assert client.banned_until > bmod.time.time() + 29000
