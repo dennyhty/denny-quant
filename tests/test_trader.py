@@ -1246,3 +1246,15 @@ def test_step_manage_does_not_rewrite_unchanged_state(tmp_path, monkeypatch):
     tr.step_manage(NOW)
     tr.step_manage(NOW)
     assert "testnet.json" not in writes
+
+
+def test_binance_client_418_waits_past_retry_after_and_prints_diagnosis(monkeypatch, capsys):
+    bmod, client, Sess, _ = _client_with(418, "100", monkeypatch)
+    t0 = bmod.time.time()
+    with pytest.raises(bmod.BinanceError):
+        client.positions()
+    # Retry-After 到了還要多等一段才送，免得剛好在解封前一刻送出又被封
+    assert client.banned_until >= t0 + 100 + bmod.BAN_MARGIN - 1
+    out = capsys.readouterr().out
+    assert "診斷：GET /fapi/v2/positionRisk" in out and "最近 1 分鐘送了 1 個" in out
+    assert "signature" not in out and "'s'" not in out  # 不印簽名和金鑰

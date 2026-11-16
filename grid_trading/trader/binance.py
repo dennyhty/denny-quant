@@ -14,6 +14,7 @@ import hmac
 import re
 import time
 import urllib.parse
+from collections import Counter, deque
 
 import pandas as pd
 import requests
@@ -29,6 +30,7 @@ def clean_id(client_id: str | None) -> str | None:
 
 
 MAX_WAIT = 30   # 被限流時單次最多等幾秒
+BAN_MARGIN = 120  # 418 的 Retry-After 到了以後再多等幾秒才送請求
 NOT_FOUND = -2013   # Order does not exist
 DUPLICATE = -4116   # ClientOrderId is duplicated
 DEAD = ("CANCELED", "EXPIRED", "REJECTED")
@@ -55,6 +57,7 @@ class BinanceFutures:
         self.stream_session = stream_session or requests.Session()
         self.banned_until = 0.0   # 418（被封）時，到這個時間為止不再送需要簽名的請求
         self._offset = 0  # 本機時間和幣安伺服器時間的差（毫秒），簽名用
+        self._recent: deque = deque(maxlen=600)  # 最近送出的請求（時間, 方法, 路徑）：被擋時印出來，查是不是真的送太多
 
     # ---------- 底層 ----------
     def _request(self, method: str, path: str, params: dict | None = None, signed: bool = False, tries: int = 3,
@@ -81,6 +84,7 @@ class BinanceFutures:
                 query = urllib.parse.urlencode(q)
                 q["signature"] = hmac.new(self.secret.encode(), query.encode(), hashlib.sha256).hexdigest()
                 headers["X-MBX-APIKEY"] = self.key
+            self._recent.append((time.time(), method, path))
             try:
                 resp = (session or self.session).request(method, self.base + path, params=q, headers=headers, timeout=self.timeout)
             except requests.RequestException as e:
@@ -96,9 +100,12 @@ class BinanceFutures:
                     ban = float(raw)
                 except (TypeError, ValueError):
                     ban = 120.0
-                self.banned_until = time.time() + ban
+                # 多等 BAN_MARGIN 秒才再送：本機時鐘和幣安差一點、剛好在解封前一刻送出的請求會被當成
+                # 「封鎖期間還在送」而再封一次，而且一次比一次久（2026-11-16 04:43 解封那一刻馬上又被封到 12:38）
+                self.banned_until = time.time() + ban + BAN_MARGIN
                 until = time.strftime("%H:%M", time.gmtime(self.banned_until))
                 print(f"幣安回 418（{path}），Retry-After={raw}，暫停送簽名請求到 {until} UTC", flush=True)
+                print(self._diagnose(method, path, q, resp), flush=True)
                 raise BinanceError(418, -1003, f"被幣安暫時封鎖到 {until} UTC")
             if resp.status_code >= 500 and not resend:
                 raise OrderUnknown(f"{path} 回 HTTP {resp.status_code}（執行狀態不明）")
@@ -112,6 +119,8 @@ class BinanceFutures:
                         wait = 2 ** (i + 1)
                     wait = min(wait, MAX_WAIT)
                     print(f"幣安回 {resp.status_code}（{path}），{wait:.0f} 秒後重試", flush=True)
+                    if resp.status_code == 429:
+                        print(self._diagnose(method, path, q, resp), flush=True)
                     time.sleep(wait)
                     continue
             try:
@@ -128,6 +137,19 @@ class BinanceFutures:
                 raise BinanceError(resp.status_code, code, (data.get("msg") if isinstance(data, dict) else "") or "")
             return data
         raise RuntimeError("unreachable")
+
+    def _diagnose(self, method: str, path: str, params: dict, resp) -> str:
+        """被限流 / 封鎖時的診斷：幣安回報的用量、回應內容、這個請求帶了哪些參數（只列名稱，不含簽名和金鑰），
+        以及最近 1 分鐘、10 分鐘各送了幾個請求。2026-11-15 被封那次事前沒有任何 429，要靠這些才查得出原因。"""
+        now = time.time()
+        recent = list(self._recent)
+        def count(window: float) -> str:
+            c = Counter(f"{m} {p}" for t, m, p in recent if now - t <= window)
+            return f"{sum(c.values())} 個（" + "、".join(f"{k}×{v}" for k, v in c.most_common(6)) + "）"
+        usage = {k: v for k, v in resp.headers.items() if k.lower().startswith("x-mbx-")}
+        names = sorted(k for k in params if k != "signature")
+        return (f"診斷：{method} {path} 參數 {names}；幣安回報用量 {usage or '無'}；回應 {str(getattr(resp, 'text', ''))[:200]!r}；"
+                f"最近 1 分鐘送了 {count(60)}，10 分鐘 {count(600)}")
 
     def sync_time(self) -> None:
         server = self._request("GET", "/fapi/v1/time")["serverTime"]
