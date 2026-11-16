@@ -12,7 +12,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import re
-import socket
 import time
 import urllib.parse
 from collections import Counter, deque
@@ -20,14 +19,6 @@ from pathlib import Path
 
 import pandas as pd
 import requests
-
-import urllib3.util.connection as _u3conn
-
-# 連線要走 IPv4 還是 IPv6：None = 照系統預設（有 IPv6 就先用 IPv6）。測試網的共用節點被封時輪流換（見 _shared_ban）。
-_FAMILY: list = [None]
-_default_family = _u3conn.allowed_gai_family
-_u3conn.allowed_gai_family = lambda: _FAMILY[0] if _FAMILY[0] is not None else _default_family()
-_FAMILY_NAME = {None: "系統預設", socket.AF_INET: "IPv4", socket.AF_INET6: "IPv6"}
 
 MAINNET = "https://fapi.binance.com"
 TESTNET = "https://testnet.binancefuture.com"
@@ -41,6 +32,8 @@ def clean_id(client_id: str | None) -> str | None:
 
 MAX_WAIT = 30   # 被限流時單次最多等幾秒
 BAN_MARGIN = 120  # 418 的 Retry-After 到了以後再多等幾秒才送請求
+SHARED_BAN_RETRIES = 6  # 測試網共用節點被封：同一個請求最多再送幾次
+SHARED_BAN_RETRY_WAIT = 0.5  # 每次重送前等幾秒
 SHARED_BAN_MAX_WEIGHT = 240  # 幣安回報的每分鐘用量在這以下（上限 2400 的一成）還被 418，不是我們送太多
 NOT_FOUND = -2013   # Order does not exist
 DUPLICATE = -4116   # ClientOrderId is duplicated
@@ -94,7 +87,9 @@ class BinanceFutures:
         if time.time() < self._path_pause.get(path, 0.0):
             raise BinanceError(418, -1003, f"{path} 走到的共用節點被封，"
                                            f"{self._path_pause[path] - time.time():.0f} 秒後才會再送這個請求")
-        for i in range(tries):
+        shared_hits, i = 0, -1
+        while i < tries - 1:
+            i += 1
             q = dict(params)
             if signed:
                 if not (self.key and self.secret):
@@ -108,10 +103,6 @@ class BinanceFutures:
             try:
                 resp = (session or self.session).request(method, self.base + path, params=q, headers=headers, timeout=self.timeout)
             except requests.RequestException as e:
-                if _FAMILY[0] is not None and isinstance(e, requests.ConnectionError):
-                    # 指定的 IPv4 / IPv6 連不上（主機可能沒有那一種位址）：改回系統預設
-                    print(f"用 {_FAMILY_NAME[_FAMILY[0]]} 連不上幣安，改回系統預設", flush=True)
-                    _FAMILY[0] = None
                 if not resend and not isinstance(e, requests.ConnectTimeout):
                     raise OrderUnknown(f"{path} 送出後沒有回應：{e}") from e
                 if i == tries - 1:
@@ -126,24 +117,19 @@ class BinanceFutures:
                     ban = 120.0
                 shared = self._shared_ban(resp)
                 if shared:
-                    # 被封的是測試網前面共用的轉送節點，不是我們（見 _shared_ban）。2026-11-16 部署後看到：
-                    # 只有條件單的路徑（algoOrder、openAlgoOrders）被擋，持倉、listenKey 照常，而且重新連線還是走到同一個節點。
-                    # 所以 (1) 換另一種位址（IPv4 ↔ IPv6）重新連線，馬上再試一次；(2) 還是被擋就只停這一個路徑，其他請求照送。
-                    used = _FAMILY_NAME[_FAMILY[0]]
-                    _FAMILY[0] = socket.AF_INET if _FAMILY[0] in (None, socket.AF_INET6) else socket.AF_INET6
-                    for sess in (self.session, self.stream_session):
-                        try:
-                            sess.close()
-                        except Exception:
-                            pass
-                    retry = i < tries - 1
-                    print(f"幣安回 418（{path}，用 {used} 連線），Retry-After={raw}，被封的是共用節點 {shared}（我們的用量很低），"
-                          + (f"改用 {_FAMILY_NAME[_FAMILY[0]]} 馬上再試" if retry
-                             else f"這個路徑暫停 {self.shared_ban_pause:.0f} 秒，下次改用 {_FAMILY_NAME[_FAMILY[0]]}"), flush=True)
-                    print(self._diagnose(method, path, q, resp), flush=True)
-                    if retry:
+                    # 被封的是測試網前面共用的轉送節點，不是我們（見 _shared_ban）。2026-11-16 的紀錄：
+                    # 只有條件單的路徑（algoOrder、openAlgoOrders）會被擋，而且是時好時壞（同一分鐘內前兩個成功、第三個被擋，
+                    # 回應裡的解封時間有兩種），看起來是幣安後面有幾台機器記著這個封鎖、其他幾台沒有；換 IPv4 / IPv6 沒有差別。
+                    # 所以隔一下原樣重送，多半就會輪到沒封的那台；試完還是不行，只停這個路徑，其他請求照送。
+                    shared_hits += 1
+                    if shared_hits <= SHARED_BAN_RETRIES:
+                        time.sleep(SHARED_BAN_RETRY_WAIT)
+                        i -= 1  # 這種重送不算在一般的重試次數裡
                         continue
                     self._path_pause[path] = time.time() + self.shared_ban_pause
+                    print(f"幣安回 418（{path}），Retry-After={raw}，被封的是共用節點 {shared}（我們的用量很低），"
+                          f"連試 {shared_hits} 次都被擋，這個路徑暫停 {self.shared_ban_pause:.0f} 秒", flush=True)
+                    print(self._diagnose(method, path, q, resp), flush=True)
                     raise BinanceError(418, -1003, f"{path} 走到的共用節點被封，{self.shared_ban_pause:.0f} 秒後再試")
                 # 多等 BAN_MARGIN 秒才再送，免得剛好在解封前一刻送出
                 self.banned_until = time.time() + ban + BAN_MARGIN
