@@ -110,7 +110,8 @@ systemctl enable --now binance-trader@testnet
   Telegram 不在幣安上，被封期間照樣送得出去。掃描時有幣抓不到 K 線（補抓一次後仍失敗）也會推一次，列出數量和最多 5 個幣名；
   這根照樣記成已處理，不會重掃。
 - **推播不擋交易**：訊息先放進佇列，由背景執行緒照順序送；程式結束（`--once`、systemd 停止）前最多等 30 秒送完。
-- **心跳**：每輪寫 `trader_state/<mode>.heartbeat.json`（`last_loop`、`last_manage_ok`、`problem`，毫秒時間戳）。
+- **心跳**：每輪寫 `trader_state/<mode>.heartbeat.json`（`last_loop`、`last_manage_ok`、`problem`，毫秒時間戳；
+  `stream` 是即時推送的狀態、`stream_last_event` 是最後一個推播事件的時間，見下一節）。
   `deploy/trader_feed.py` 把它放進每個 book 的 `heartbeat`（沒有檔案就是 `null`），績效頁顯示「交易程式最後回報」，
   比 feed 產生時間晚 10 分鐘以上或有問題時變警示色。
 - **狀態檔備份**：每天（UTC）第一次存檔時寫 `<mode>.json.bak-YYYYMMDD`，留最近 7 份。存檔前先 fsync 暫存檔再改名；內容沒變就不重寫。
@@ -119,3 +120,33 @@ systemctl enable --now binance-trader@testnet
     備份是那天第一次存檔的內容，之後開、平的倉可能不在裡面：**馬上到幣安核對倉位**，缺的手動補進狀態檔（先停服務）。
   - 壞檔又沒有能用的備份時，程式推播一次後結束（原檔不動），不會用空狀態開始（否則已開的倉位沒人管，只剩交易所上的止損止盈）。
     處理：停服務 → 從別處還原或手動修好 JSON → 刪掉 `<mode>.json.alerted` → 重開。
+
+## 即時推送（帳戶 websocket）
+
+測試網和實盤會連幣安的 user data stream。成交、止損止盈觸發、倉位變動時幣安會推事件，程式收到就**馬上跑一輪平常的持倉管理**
+（等 1 秒把同一批事件合成一輪，兩輪之間至少隔 3 秒）。推播只決定「什麼時候查」：成交、數量、損益照舊全部用 REST 查，
+所以推播漏了、晚了、格式改了都不會記錯帳。
+
+- **輪詢照樣是保險**：推送正常時每 300 秒（`--poll-stream`）還是會輪詢一次；推送不正常時照舊每 60 秒（`--poll`）。
+  收盤掃描照樣準時（收盤 + `--scan-delay`）。
+- **怎樣才算正常**：連著，而且這個網址**收過**訂單 / 條件單 / 帳戶事件（ORDER_TRADE_UPDATE、ALGO_UPDATE、ACCOUNT_UPDATE）。
+  只連上不算：舊網址可能連得上卻什麼都不推，和「帳戶剛好沒事」分不出來。所以剛啟動、還沒有任何成交或掛單前都是 60 秒輪詢，
+  程式第一次開倉、掛單之後才會切到 300 秒。
+- **關掉**：加 `--no-stream`（改 `deploy/binance-trader.service` 的 `ExecStart`），就和以前一樣只輪詢。
+- **網址**：幣安 2026 年改了網址格式，細節沒能確認，預設依序試
+  `wss://fstream.binance.com/private/ws?listenKey={listenKey}&events=ORDER_TRADE_UPDATE/ACCOUNT_UPDATE/ALGO_UPDATE`
+  和舊的 `wss://fstream.binance.com/ws/{listenKey}`（測試網是 `fstream.binancefuture.com`）。連不上或一連上就斷會換下一個。
+  要換網址就在 `trader.env` 加 `BINANCE_WS_URL=範本1,範本2`（逗號分隔，每個都要有 `{listenKey}`）。
+- **安裝**：要 `websocket-client` 套件。更新程式後在 venv 裡跑一次
+  `su - trader -c 'cd grid-trading && .venv/bin/pip install -r requirements.txt'` 再重開服務。
+  沒裝也不會當掉：紀錄印一行「沒有安裝 websocket-client，即時推送關閉」，照舊輪詢。
+- **listenKey**：程式自己申請、每 30 分鐘延長，被幣安 418 封鎖期間不送；連滿 23 小時主動重連（幣安 24 小時會切斷）；
+  斷線後重連（等 1、2、4…最多 60 秒）。listenKey 等於帳戶推播的鑰匙，紀錄裡一律顯示成 `***`。
+
+**怎麼看有沒有在動**：
+
+- 紀錄（`journalctl -u binance-trader@testnet -f`）：`即時推送已連線（範本 #0：…）` → 第一次有事件時
+  `即時推送確認可用：範本 #0 收到 ORDER_TRADE_UPDATE`；斷線時 `即時推送斷線：…原因`（同樣的原因只印一次）。
+- 心跳檔的 `stream`：`healthy`（正常，300 秒輪詢）、`connected`（連著但還沒收過事件，60 秒輪詢）、
+  `down`（斷線重連中，60 秒輪詢）、`off`（`--no-stream`、紙上交易或沒裝套件）。
+- Telegram：啟動後第一次確認可用推一次「即時推送已啟用…」；確認過之後斷超過 10 分鐘推一次警報、恢復推一次，重連不洗版。

@@ -1022,7 +1022,8 @@ def test_heartbeat_file_written_each_loop(tmp_path):
     tr, ex, sink, clock = _clocked(tmp_path)
     tr.run_once(NOW)
     hb = json.loads((tmp_path / "testnet.heartbeat.json").read_text())
-    assert hb == {"last_loop": int(CLK * 1000), "last_manage_ok": int(CLK * 1000), "problem": None}
+    assert hb == {"last_loop": int(CLK * 1000), "last_manage_ok": int(CLK * 1000), "problem": None,
+                  "stream": "off", "stream_last_event": None}
     assert not list(tmp_path.glob("*.tmp"))
 
 
@@ -1245,3 +1246,28 @@ def test_step_manage_does_not_rewrite_unchanged_state(tmp_path, monkeypatch):
     tr.step_manage(NOW)
     tr.step_manage(NOW)
     assert "testnet.json" not in writes
+
+
+def test_binance_client_418_waits_past_retry_after_and_prints_diagnosis(monkeypatch, capsys):
+    bmod, client, Sess, _ = _client_with(418, "100", monkeypatch)
+    t0 = bmod.time.time()
+    with pytest.raises(bmod.BinanceError):
+        client.positions()
+    # Retry-After 到了還要多等一段才送，免得剛好在解封前一刻送出又被封
+    assert client.banned_until >= t0 + 100 + bmod.BAN_MARGIN - 1
+    out = capsys.readouterr().out
+    assert "診斷：GET /fapi/v2/positionRisk" in out and "最近 1 分鐘送了 1 個" in out
+    assert "signature" not in out and "'s'" not in out  # 不印簽名和金鑰
+
+
+def test_binance_ban_survives_restart_and_blocks_unsigned_requests(monkeypatch, tmp_path):
+    bmod, client, Sess, _ = _client_with(418, "100", monkeypatch)
+    client.ban_file = tmp_path / "testnet.ban"
+    with pytest.raises(bmod.BinanceError):
+        client.positions()
+    calls = Sess.calls
+    again = bmod.BinanceFutures(key="k", secret="s", session=Sess(), ban_file=tmp_path / "testnet.ban")
+    assert again.banned_until == pytest.approx(client.banned_until)
+    with pytest.raises(bmod.BinanceError):
+        again.klines("BTCUSDT", "2H")   # 不簽名的請求在封鎖期間也不送
+    assert Sess.calls == calls
