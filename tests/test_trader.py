@@ -1258,3 +1258,16 @@ def test_binance_client_418_waits_past_retry_after_and_prints_diagnosis(monkeypa
     out = capsys.readouterr().out
     assert "診斷：GET /fapi/v2/positionRisk" in out and "最近 1 分鐘送了 1 個" in out
     assert "signature" not in out and "'s'" not in out  # 不印簽名和金鑰
+
+
+def test_binance_ban_survives_restart_and_blocks_unsigned_requests(monkeypatch, tmp_path):
+    bmod, client, Sess, _ = _client_with(418, "100", monkeypatch)
+    client.ban_file = tmp_path / "testnet.ban"
+    with pytest.raises(bmod.BinanceError):
+        client.positions()
+    calls = Sess.calls
+    again = bmod.BinanceFutures(key="k", secret="s", session=Sess(), ban_file=tmp_path / "testnet.ban")
+    assert again.banned_until == pytest.approx(client.banned_until)
+    with pytest.raises(bmod.BinanceError):
+        again.klines("BTCUSDT", "2H")   # 不簽名的請求在封鎖期間也不送
+    assert Sess.calls == calls

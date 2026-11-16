@@ -15,6 +15,7 @@ import re
 import time
 import urllib.parse
 from collections import Counter, deque
+from pathlib import Path
 
 import pandas as pd
 import requests
@@ -48,14 +49,18 @@ class OrderUnknown(RuntimeError):
 
 class BinanceFutures:
     def __init__(self, base: str = MAINNET, key: str = "", secret: str = "", timeout: float = 15,
-                 session: requests.Session | None = None, stream_session: requests.Session | None = None):
+                 session: requests.Session | None = None, stream_session: requests.Session | None = None,
+                 ban_file=None):
         self.base = base.rstrip("/")
         self.key, self.secret = key, secret
         self.timeout = timeout
         self.session = session or requests.Session()
         # requests.Session 沒有保證多執行緒安全：即時推送的執行緒（listenKey）用自己的 session，不和交易迴圈共用
         self.stream_session = stream_session or requests.Session()
-        self.banned_until = 0.0   # 418（被封）時，到這個時間為止不再送需要簽名的請求
+        # 418（被封）時，到這個時間為止這個用戶端不再送任何請求（封的是 IP，不簽名的請求也算）。
+        # 有給 ban_file 就寫進檔案：程式重開後照樣等到解封，不會一啟動就在封鎖期間送請求、被封得更久
+        self.ban_file = Path(ban_file) if ban_file else None
+        self.banned_until = self._load_ban()
         self._offset = 0  # 本機時間和幣安伺服器時間的差（毫秒），簽名用
         self._recent: deque = deque(maxlen=600)  # 最近送出的請求（時間, 方法, 路徑）：被擋時印出來，查是不是真的送太多
 
@@ -71,7 +76,7 @@ class BinanceFutures:
             if not self.key:
                 raise RuntimeError("沒有設定 BINANCE_API_KEY")
             headers["X-MBX-APIKEY"] = self.key
-        if (signed or keyed) and time.time() < self.banned_until:
+        if time.time() < self.banned_until:
             # 被封期間再送請求只會把封鎖拉長，直接失敗，讓上層記一行就好
             raise BinanceError(418, -1003, f"被幣安暫時封鎖，{self.banned_until - time.time():.0f} 秒後才會再送請求")
         for i in range(tries):
@@ -103,6 +108,7 @@ class BinanceFutures:
                 # 多等 BAN_MARGIN 秒才再送：本機時鐘和幣安差一點、剛好在解封前一刻送出的請求會被當成
                 # 「封鎖期間還在送」而再封一次，而且一次比一次久（2026-11-16 04:43 解封那一刻馬上又被封到 12:38）
                 self.banned_until = time.time() + ban + BAN_MARGIN
+                self._save_ban()
                 until = time.strftime("%H:%M", time.gmtime(self.banned_until))
                 print(f"幣安回 418（{path}），Retry-After={raw}，暫停送簽名請求到 {until} UTC", flush=True)
                 print(self._diagnose(method, path, q, resp), flush=True)
@@ -137,6 +143,20 @@ class BinanceFutures:
                 raise BinanceError(resp.status_code, code, (data.get("msg") if isinstance(data, dict) else "") or "")
             return data
         raise RuntimeError("unreachable")
+
+    def _load_ban(self) -> float:
+        try:
+            return float(self.ban_file.read_text()) if self.ban_file else 0.0
+        except (OSError, ValueError):
+            return 0.0
+
+    def _save_ban(self) -> None:
+        if self.ban_file:
+            try:
+                self.ban_file.parent.mkdir(parents=True, exist_ok=True)
+                self.ban_file.write_text(str(self.banned_until))
+            except OSError as e:  # 寫不出來只是重開後不記得，不影響交易
+                print("封鎖時間寫檔失敗:", e, flush=True)
 
     def _diagnose(self, method: str, path: str, params: dict, resp) -> str:
         """被限流 / 封鎖時的診斷：幣安回報的用量、回應內容、這個請求帶了哪些參數（只列名稱，不含簽名和金鑰），

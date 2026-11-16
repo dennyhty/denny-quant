@@ -16,6 +16,7 @@ import argparse
 import os
 import signal
 import sys
+import time
 from pathlib import Path
 
 from grid_trading.trader.binance import MAINNET, TESTNET, BinanceFutures
@@ -60,7 +61,13 @@ def main(argv: list[str]) -> int:
         if not (key and secret):
             print("沒有設定 BINANCE_API_KEY / BINANCE_API_SECRET", file=sys.stderr)
             return 2
-        venue = BinanceFutures(TESTNET if a.mode == "testnet" else MAINNET, key, secret)
+        venue = BinanceFutures(TESTNET if a.mode == "testnet" else MAINNET, key, secret,
+                               ban_file=a.state_dir / f"{a.mode}.ban")
+        wait = venue.banned_until - time.time()
+        if wait > 0:  # 上次被幣安封鎖還沒解封：等到解封才開始，封鎖期間送請求只會被封得更久
+            print(f"上次被幣安封鎖（HTTP 418）還沒解封，等 {wait:.0f} 秒"
+                  f"（到 {time.strftime('%m-%d %H:%M', time.gmtime(venue.banned_until))} UTC）才啟動", flush=True)
+            time.sleep(wait)
         venue.sync_time()
         broker = LiveBroker(venue, data, cfg)
         if not a.no_stream:  # 推播只是叫醒主迴圈，持倉照舊用 REST 輪詢查；BINANCE_WS_URL 可以換網址
