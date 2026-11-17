@@ -13,6 +13,7 @@
 - paper：PaperBroker 直接用 tracker 算結果，和回測完全一致，只記帳。
 - testnet / live：LiveBroker 開倉後馬上在交易所掛止損（這張單的數量）和三個止盈（各 1/4），
   之後每分鐘（--poll）查各條件單的狀態判斷哪個 TP 成交了，再移動止損。程式停了，交易所上的止損還在。
+  有帳戶推播（stream.py）時，成交事件會馬上叫醒這個輪詢，推播正常時輪詢間隔放寬到 --poll-stream。
   價位以實際成交價為準（止損距離照訊號的比例），所以 1R 的大小和訊號一致。
   平倉時盡量用交易所的成交明細算損益（帳本 pnl_source = fills），對不上就用觸發價估算（estimate）。
 """
@@ -50,6 +51,9 @@ AUDIT_EVERY = 3600.0  # 多久比對一次交易所倉位和程式記錄（秒�
 OUTAGE_GRACE = 600.0  # 連續失敗超過幾秒才推警報（短暫斷線不吵人）
 RETRY_PAUSE = 5.0     # 掃描時抓不到 K 線的幣，等幾秒再補抓一次
 BACKUPS_KEEP = 7      # 狀態檔每天備份一份，留幾份
+DEBOUNCE = 1.0        # 推播叫醒後等一下再跑：一批事件只跑一輪，幣安那邊也已經查得到
+STREAM_GAP = 3.0      # 推播觸發的兩輪之間至少隔幾秒（事件很多時不要一直打 API）
+HEALTH_CHECK = 5.0    # 等待時多久重看一次推播是否健康（斷了要馬上改回短的輪詢間隔）
 
 
 @dataclass
@@ -65,6 +69,7 @@ class Config:
     coins: list[str] = field(default_factory=lambda: list(TOP100))
     bars: int = 1000
     poll: float = 60.0         # 持倉管理多久看一次（秒）；止損、止盈掛在交易所，這裡只負責追蹤和記帳
+    poll_stream: float = 300.0  # 即時推送健康時多久輪詢一次（成交會叫醒主迴圈，這只是保險）
     scan_delay: float = 15.0   # 收盤後等幾秒再掃描（紙上和測試網錯開，免得同一秒打光 IP 的額度）
     paper_check: float = 300.0  # 紙上交易每張單多久重算一次（用的是 K 線，晚一點算結果一樣）
 
@@ -264,8 +269,10 @@ def _side_text(side: str) -> str:
 
 
 class Trader:
-    def __init__(self, cfg: Config, data: BinanceFutures, broker, notify: Notifier, filters: dict[str, Filters]):
+    def __init__(self, cfg: Config, data: BinanceFutures, broker, notify: Notifier, filters: dict[str, Filters],
+                 stream=None):
         self.cfg = cfg
+        self.stream = stream      # 帳戶推播（stream.UserStream）：只用來叫醒主迴圈；None = 只輪詢
         self.data = data          # 行情（正式站）
         self.broker = broker
         self.notify = notify
@@ -276,6 +283,13 @@ class Trader:
             self._abort_corrupt(e)
         self._audit_at = 0.0  # 上次比對倉位的時間（秒）
         self._clock = time.time  # 測試可以換掉
+        self._wait = lambda ev, t: ev.wait(t)  # 等推播事件（測試換成假的，不真的睡）
+        self._sleep = time.sleep
+        self._idle_ev = threading.Event()      # 沒有推播時拿來等的（永遠不會被設）
+        self._poll = cfg.poll
+        self._last_pass = 0.0
+        self._stream_announced = False
+        self._stream_out = Outage("即時推送", notify)
         self._manage_out = Outage("無法管理持倉", notify)
         self._loop_out = Outage("主迴圈無法正常執行", notify)
         self.last_loop: float | None = None
@@ -499,7 +513,9 @@ class Trader:
         problems = [o.reason for o in (self._manage_out, self._loop_out) if o.since is not None]
         ms = lambda x: None if x is None else int(x * 1000)
         body = json.dumps({"last_loop": ms(self.last_loop), "last_manage_ok": ms(self.last_manage_ok),
-                           "problem": "；".join(problems) or None}, ensure_ascii=False)
+                           "problem": "；".join(problems) or None, "stream": self.stream_state(),
+                           "stream_last_event": ms(getattr(self.stream, "last_event", None))},
+                          ensure_ascii=False)
         try:
             self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
             _write_atomic(self.heartbeat_path(), body)
@@ -526,7 +542,53 @@ class Trader:
         else:
             self._loop_out.ok(t)
         self.last_loop = t
+        self._watch_stream(t)
         self.write_heartbeat()
+
+    # ---------- 即時推送 ----------
+    def stream_state(self) -> str:
+        """healthy（連著且證明過）/ connected（連著但還沒收到帳戶事件）/ down / off（沒開或沒裝套件）。"""
+        return "off" if self.stream is None else self.stream.state
+
+    def _watch_stream(self, t: float) -> None:
+        """第一次確認可用推一次；確認過之後不健康超過 10 分鐘推一次警報、恢復推一次（重連迴圈不洗版）。"""
+        s = self.stream
+        if s is None or not s.enabled:
+            return
+        if s.healthy:
+            if not self._stream_announced:
+                self._stream_announced = True
+                self.notify(f"即時推送已啟用：成交、止損止盈觸發會馬上處理，沒有事件時每 {self.cfg.poll_stream:.0f} 秒輪詢一次")
+            self._stream_out.ok(t)
+        elif self._stream_announced:
+            self._stream_out.fail(f"中斷（{s.last_error or s.state}），持倉管理改回每 {self._poll:.0f} 秒輪詢，"
+                                  f"止損止盈照常掛在交易所", t)
+
+    def next_scan(self, t: float) -> float:
+        """下一次收盤掃描的時間（Unix 秒）：2H 收盤 + scan_delay（4H 收盤一定也是 2H 收盤）。"""
+        period = BAR["2H"].total_seconds()
+        nxt = t - t % period + self.cfg.scan_delay
+        while nxt <= t:
+            nxt += period
+        return nxt
+
+    def idle(self, poll: float) -> str:
+        """等到下一輪：推播叫醒（"event"）、輪詢間隔到或收盤掃描時間到（"poll"），哪個先到。
+        推播健康時輪詢間隔用 poll_stream，否則照舊用 poll。"""
+        started = self._clock()
+        wake = self.stream.wake if self.stream is not None else self._idle_ev
+        while True:
+            now = self._clock()
+            healthy = self.stream is not None and self.stream.healthy
+            deadline = min(started + (self.cfg.poll_stream if healthy else poll), self.next_scan(now))
+            if now >= deadline:
+                return "poll"
+            if self._wait(wake, min(deadline - now, HEALTH_CHECK)):
+                break
+        # 一批事件（例如止盈成交帶出好幾個事件）只跑一輪；離上一輪太近就等到滿 STREAM_GAP 秒
+        self._sleep(max(DEBOUNCE, self._last_pass + STREAM_GAP - self._clock()))
+        wake.clear()  # 清在跑之前：跑的時候又來的事件會再叫醒一次
+        return "event"
 
     def run(self, poll: float | None = None, once: bool = False) -> None:
         poll = self.cfg.poll if poll is None else poll
@@ -539,12 +601,21 @@ class Trader:
             print("啟動檢查失敗:", e, flush=True)
         self._audit_at = pd.Timestamp.now(tz="UTC").timestamp()  # 啟動檢查剛比對過
         self.store.save()
-        while True:
-            self.run_once(pd.Timestamp.now(tz="UTC"))
-            if once:
-                getattr(self.notify, "flush", lambda: None)()  # 單次模式：等推播送完再結束
-                return
-            time.sleep(poll)
+        self._poll = poll
+        streaming = self.stream is not None and not once  # 單次模式不必開推播
+        if streaming:
+            self.stream.start()
+        try:
+            while True:
+                self._last_pass = self._clock()
+                self.run_once(pd.Timestamp.now(tz="UTC"))
+                if once:
+                    getattr(self.notify, "flush", lambda: None)()  # 單次模式：等推播送完再結束
+                    return
+                self.idle(poll)
+        finally:
+            if streaming:
+                self.stream.stop()
 
 
 # ---------- 紙上交易 ----------
