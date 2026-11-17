@@ -3,7 +3,8 @@
 - 行情一律走正式站 fapi.binance.com（訊號要用真實價格算）；測試網模式的下單和持倉管理走測試網。
 - 美國的 IP 會被擋（HTTP 451），所以只能在美國以外的主機上跑（GitHub Actions 不行）。
 - 條件單（止損、止盈）從 2025-12 起改走 Algo Order：POST/DELETE /fapi/v1/algoOrder、GET /fapi/v1/openAlgoOrders。
-- 下單（市價單、條件單）不盲目重送：逾時或 5xx 時幣安可能其實已經成交（官方文件：執行狀態不明），
+- 進場和止盈可以用一般限價單（/fapi/v1/order type=LIMIT），止損一律用條件單。
+- 下單（市價單、限價單、條件單）不盲目重送：逾時或 5xx 時幣安可能其實已經成交（官方文件：執行狀態不明），
   先用 client id 查這張單，查得到就當作成功，查無此單（-2013）才重送；查也查不到結果就丟 OrderUnknown。
 """
 
@@ -36,6 +37,8 @@ SHARED_BAN_RETRIES = 6  # 測試網共用節點被封：同一個請求最多再
 SHARED_BAN_RETRY_WAIT = 0.5  # 每次重送前等幾秒
 SHARED_BAN_MAX_WEIGHT = 240  # 幣安回報的每分鐘用量在這以下（上限 2400 的一成）還被 418，不是我們送太多
 NOT_FOUND = -2013   # Order does not exist
+UNKNOWN_ORDER = -2011  # 取消時：Unknown order sent（已成交或已取消）
+POST_ONLY_REJECT = -5022  # 只掛單（GTX）的限價單一掛上去就會成交，幣安拒絕
 DUPLICATE = -4116   # ClientOrderId is duplicated
 DEAD = ("CANCELED", "EXPIRED", "REJECTED")
 
@@ -339,6 +342,36 @@ class BinanceFutures:
         return self._place("/fapi/v1/order", {
             "symbol": symbol, "side": side, "positionSide": position_side, "type": "MARKET",
             "quantity": quantity, "newClientOrderId": cid, "newOrderRespType": "RESULT"}, lookup)
+
+    def order_by_id(self, symbol: str, order_id) -> dict:
+        """用訂單 id 查一般訂單（含已成交、已取消的）：status、executedQty、avgPrice。"""
+        return self._request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id}, signed=True)
+
+    def limit_order(self, symbol: str, side: str, position_side: str, quantity: str, price: str, client_id: str,
+                    tif: str = "GTX") -> dict:
+        """限價單。tif="GTX" 是只掛單（會馬上成交就被拒，幣安回 -5022 或狀態 EXPIRED），"GTC" 是一般限價單。
+        雙向持倉下 SELL+LONG / BUY+SHORT 是平倉單（止盈用），不會反向開倉。
+        掛著的限價單 client id 不能重複，結果不明時查單、重複 id 也當作前一次已經掛上。"""
+        cid = clean_id(client_id)
+        return self._place("/fapi/v1/order", {
+            "symbol": symbol, "side": side, "positionSide": position_side, "type": "LIMIT", "timeInForce": tif,
+            "quantity": quantity, "price": price, "newClientOrderId": cid, "newOrderRespType": "RESULT"},
+            lambda: self.order(symbol, cid), dup_ok=True)
+
+    def cancel_order(self, symbol: str, order_id) -> dict:
+        """取消一般訂單，回傳取消後的訂單（含 executedQty：取消前已經成交的部分）。
+        已經成交或取消過的單幣安回 -2011，這時改查單，回傳它目前的狀態。"""
+        try:
+            return self._request("DELETE", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id}, signed=True)
+        except BinanceError as e:
+            if e.code != UNKNOWN_ORDER:
+                raise
+            return self.order_by_id(symbol, order_id)
+
+    def open_orders(self, symbol: str | None = None) -> list[dict]:
+        """掛著的一般訂單（限價止盈、還沒成交的限價進場單）。不給 symbol 就一次列出所有幣（權重 40）。"""
+        data = self._request("GET", "/fapi/v1/openOrders", {"symbol": symbol}, signed=True)
+        return data if isinstance(data, list) else []
 
     def conditional_order(self, symbol: str, side: str, position_side: str, kind: str, trigger: str,
                           quantity: str | None = None, client_id: str | None = None) -> dict:
