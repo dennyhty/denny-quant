@@ -6,7 +6,10 @@
 
 選項：--risk 0.0025（每筆風險）、--max-risk 0.01（最小下單量造成的風險上限）、--leverage 5（逐倉）、
 --max-open 15（同時最多幾張）、--dd-half-r 20（回撤 20R 後風險減半）、--state-dir（狀態檔位置）、
---no-stream（不開即時推送）、--poll-stream 300（推送正常時的輪詢間隔）。
+--no-stream（不開即時推送）、--poll-stream 300（推送正常時的輪詢間隔）、
+--min-adv 5e7（近 30 天日均成交額低於 5,000 萬 U 的幣不做，0 = 不設）、
+--entry-wait 600（限價進場最多等幾秒）、--taker（進場和止盈改回市價）。
+預設（2026-11-17 起）：進場掛限價單在訊號收盤價、逾時沒成交的部分改市價；止盈掛限價單；止損仍是市價條件單。
 暫停開新倉：在狀態資料夾建立 pause 檔（touch trader_state/pause）；刪掉就恢復。已開的倉位照常管理。
 """
 
@@ -42,6 +45,11 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--no-stream", action="store_true", help="不開即時推送（帳戶 websocket），只照 --poll 輪詢")
     ap.add_argument("--scan-delay", type=float, default=None,
                     help="收盤後幾秒再掃描（預設：測試網、正式 15 秒，紙上 75 秒，和測試網錯開）")
+    ap.add_argument("--min-adv", type=float, default=5e7,
+                    help="近 30 天日均成交額（USDT）低於這個數字的幣不做（預設 5,000 萬；0 = 不設門檻）")
+    ap.add_argument("--entry-wait", type=float, default=600.0,
+                    help="限價進場最多等幾秒，沒成交完的部分改市價（預設 600）")
+    ap.add_argument("--taker", action="store_true", help="進場和止盈都用市價（舊做法），不掛限價單")
     ap.add_argument("--once", action="store_true", help="只跑一輪（測試用）")
     a = ap.parse_args(argv)
 
@@ -50,7 +58,8 @@ def main(argv: list[str]) -> int:
         return 2
     cfg = Config(mode=a.mode, risk=a.risk, max_risk=a.max_risk, leverage=a.leverage, paper_equity=a.paper_equity,
                  rules=RiskRules(max_open=a.max_open, dd_half_r=a.dd_half_r), state_dir=a.state_dir,
-                 poll=a.poll, poll_stream=a.poll_stream, scan_delay=(75.0 if a.mode == "paper" else 15.0) if a.scan_delay is None else a.scan_delay)
+                 poll=a.poll, poll_stream=a.poll_stream, min_adv=a.min_adv, entry_wait=a.entry_wait,
+                 maker_entry=not a.taker, maker_tp=not a.taker, scan_delay=(75.0 if a.mode == "paper" else 15.0) if a.scan_delay is None else a.scan_delay)
     data = BinanceFutures(MAINNET)
     stream = None
     if a.mode == "paper":

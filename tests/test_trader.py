@@ -172,6 +172,52 @@ class FakeExchange:
     def realized_since(self, symbol, ps, start):
         return self.pnl
 
+    # 一般訂單（限價進場、限價止盈）
+    def limit_order(self, symbol, side, ps, quantity, price, client_id, tif="GTX"):
+        if getattr(self, "reject_post_only", False) and tif == "GTX":
+            from grid_trading.trader.binance import BinanceError
+            raise BinanceError(400, -5022, "Post Only order will be rejected")
+        oid = self.next_order
+        self.next_order += 1
+        if not hasattr(self, "orders"):
+            self.orders = {}
+        self.orders[oid] = {"orderId": oid, "symbol": symbol, "side": side, "ps": ps, "qty": float(quantity),
+                            "price": float(price), "status": "NEW", "executedQty": 0.0, "avgPrice": 0.0,
+                            "cid": client_id, "tif": tif}
+        return self._view(oid)
+
+    def _view(self, oid):
+        o = self.orders[oid]
+        return {"orderId": oid, "status": o["status"], "executedQty": str(o["executedQty"]),
+                "avgPrice": str(o["avgPrice"]), "symbol": o["symbol"]}
+
+    def fill_limit(self, oid, qty=None):
+        """限價單成交 qty（預設全部），成交價 = 掛單價。"""
+        o = self.orders[oid]
+        q = o["qty"] - o["executedQty"] if qty is None else qty
+        opening = (o["side"] == "BUY") == (o["ps"] == "LONG")
+        key = (o["symbol"], o["ps"])
+        self.pos[key] = self.pos.get(key, 0.0) + (q if opening else -q)
+        o["executedQty"] += q
+        o["avgPrice"] = o["price"]
+        o["status"] = "FILLED" if o["executedQty"] >= o["qty"] - 1e-12 else "PARTIALLY_FILLED"
+        self.trades.setdefault(oid, []).append(
+            {"orderId": oid, "qty": str(q), "price": str(o["price"]), "positionSide": o["ps"],
+             "commission": str(q * o["price"] * 0.0002), "commissionAsset": "USDT"})
+
+    def order_by_id(self, symbol, oid):
+        return self._view(oid)
+
+    def cancel_order(self, symbol, oid):
+        o = self.orders[oid]
+        if o["status"] in ("NEW", "PARTIALLY_FILLED"):
+            o["status"] = "CANCELED"
+        return self._view(oid)
+
+    def open_orders(self, symbol=None):
+        return [self._view(k) for k, o in getattr(self, "orders", {}).items()
+                if o["status"] in ("NEW", "PARTIALLY_FILLED") and (symbol is None or o["symbol"] == symbol)]
+
     def trigger(self, kind, n=0, oid=None, fill=None):
         """讓第 n 張某類條件單（或指定 id）成交（fill：實際成交價，預設是觸發價）。
         只會減倉：數量比交易所上的合併倉位大時只平到倉位為止。"""
@@ -1327,3 +1373,169 @@ def test_testnet_shared_gateway_418_retry_gets_through(monkeypatch, capsys):
     client.positions()  # 不丟錯誤
     assert Sess.calls == 3 and not client._path_pause and client.banned_until == 0.0
     assert capsys.readouterr().out == ""
+
+
+# ---------- 流動性門檻、限價進場、限價止盈（2026-11-17） ----------
+def make_maker(tmp_path, ex, **kw):
+    cfg = Config(mode="testnet", state_dir=tmp_path, coins=["X"], maker_entry=True, maker_tp=True, **kw)
+    sink = []
+    broker = LiveBroker(ex, ex, cfg)
+    tr = Trader(cfg, ex, broker, Notifier("test", sink=sink), {"XUSDT": F})
+    return tr, sink, broker
+
+
+def test_daily_turnover_uses_last_30_days_of_closed_bars():
+    from grid_trading.trader.bot import daily_turnover
+    df = candles([(101, 99, 100)] * 400)          # 2H：30 天 = 360 根
+    df["volume"] = 10.0
+    assert daily_turnover(df, "2H") == pytest.approx(360 * 10 * 100 / 30)
+    assert daily_turnover(df.iloc[:100], "2H") is None
+
+
+def test_illiquid_coin_is_skipped(tmp_path):
+    ex = FakeExchange()
+    cfg = Config(mode="testnet", state_dir=tmp_path, coins=["X"], min_adv=5e7)
+    sink = []
+    tr = Trader(cfg, ex, LiveBroker(ex, ex, cfg), Notifier("test", sink=sink), {"XUSDT": F})
+    sig = make_signal()
+    sig.info["adv_usdt"] = 3.2e7
+    tr.try_open(sig)
+    assert not tr.store.positions and not ex.positions()
+    assert "不做" in sink[-1] and "3,200 萬 U" in sink[-1] and "5,000 萬 U" in sink[-1]
+    sig2 = make_signal(t=T0 + pd.Timedelta(hours=2))
+    sig2.info["adv_usdt"] = 8e7
+    tr.try_open(sig2)
+    assert len(tr.store.positions) == 1
+
+
+def test_limit_entry_waits_then_arms_stop_and_limit_tps(tmp_path):
+    ex = FakeExchange(price=101.0, df=candles([(101, 99, 100)] * 3))
+    tr, sink, _ = make_maker(tmp_path, ex)
+    tr.try_open(make_signal())
+    pos = next(iter(tr.store.positions.values()))
+    assert pos["pending"] and not ex.algo and not ex.positions()   # 還沒成交：沒有倉位、沒有止損
+    lim = next(iter(ex.orders.values()))
+    assert lim["price"] == 100.0 and lim["tif"] == "GTX" and lim["qty"] == pytest.approx(0.625)
+    assert "已掛限價單" in sink[-1]
+    now = T0 + pd.Timedelta(minutes=1)
+    tr.step_manage(now)                                             # 還在等
+    assert pos["pending"] and not ex.algo
+    ex.fill_limit(lim["orderId"])
+    tr.step_manage(now)
+    assert "pending" not in pos and pos["entry"] == 100.0 and pos["remaining"] == pytest.approx(0.625)
+    stop = next(o for o in ex.algo.values() if o["type"] == "STOP_MARKET")
+    assert stop["trigger"] == pytest.approx(96.0) and stop["qty"] == pytest.approx(0.625)
+    tps = [o for o in ex.orders.values() if o["side"] == "SELL"]
+    assert [o["price"] for o in tps] == pytest.approx([104.0, 112.0, 120.0]) and all(o["tif"] == "GTC" for o in tps)
+    assert pos["tp_kind"] == "limit" and "進場 0.625 @ 100（全部掛單成交）" in sink[-1]
+
+
+def test_limit_entry_timeout_cancels_and_buys_rest_at_market(tmp_path):
+    ex = FakeExchange(price=102.0, df=candles([(101, 99, 100)] * 3))
+    tr, sink, _ = make_maker(tmp_path, ex)
+    tr.try_open(make_signal())
+    pos = next(iter(tr.store.positions.values()))
+    lim = next(iter(ex.orders.values()))
+    ex.fill_limit(lim["orderId"], 0.2)
+    pos["pending"]["deadline"] = 0                                  # 時間到
+    tr.step_manage(T0 + pd.Timedelta(minutes=11))
+    assert lim["status"] == "CANCELED"
+    assert ex.positions()[("XUSDT", "LONG")] == pytest.approx(0.625)
+    assert pos["entry"] == pytest.approx((0.2 * 100 + 0.425 * 102) / 0.625)
+    assert len(pos["entry_orders"]) == 2 and pos["maker_qty"] == pytest.approx(0.2)
+    assert next(o for o in ex.algo.values() if o["type"] == "STOP_MARKET")["qty"] == pytest.approx(0.625)
+    assert "其餘市價" in sink[-1]
+
+
+def test_limit_entry_never_filled_and_rest_rejected_is_dropped(tmp_path):
+    from grid_trading.trader.binance import BinanceError
+    ex = FakeExchange(price=102.0)
+    tr, sink, _ = make_maker(tmp_path, ex)
+    tr.try_open(make_signal())
+    pos = next(iter(tr.store.positions.values()))
+    pos["pending"]["deadline"] = 0
+
+    def reject(*a, **k):
+        raise BinanceError(400, -4164, "Order's notional must be no smaller than 5")
+
+    ex.market_order = reject
+    tr.step_manage(T0 + pd.Timedelta(minutes=11))
+    assert not tr.store.positions and not tr.store.ledger and not ex.positions()
+    assert "這張不做" in sink[-1]
+
+
+def test_post_only_rejected_enters_at_market(tmp_path):
+    ex = FakeExchange(price=99.5)
+    ex.reject_post_only = True                                       # 價格已經比訊號價好
+    tr, sink, _ = make_maker(tmp_path, ex)
+    tr.try_open(make_signal())
+    pos = next(iter(tr.store.positions.values()))
+    assert "pending" not in pos and pos["entry"] == 99.5 and ex.positions()[("XUSDT", "LONG")] == pytest.approx(0.625)
+    assert "已開倉" in sink[-1]
+
+
+def test_limit_tp_fill_moves_stop_and_partial_tp_is_booked_when_stopped(tmp_path):
+    ex = FakeExchange(price=100.0, df=candles([(101, 99, 100)] * 3))
+    tr, sink, _ = make_maker(tmp_path, ex)
+    tr.try_open(make_signal())
+    pos = next(iter(tr.store.positions.values()))
+    ex.fill_limit(next(iter(ex.orders)))
+    now = T0 + pd.Timedelta(minutes=5)
+    tr.step_manage(now)
+    tp1, tp2, tp3 = pos["tp_ids"]
+    ex.fill_limit(tp1)
+    tr.step_manage(now)
+    assert pos["tps_hit"] == 1 and any("TP1 觸及" in m for m in sink)
+    be = next(o for o in ex.algo.values() if o["type"] == "STOP_MARKET")
+    assert be["trigger"] == pytest.approx(100 * 1.001) and be["qty"] == pytest.approx(0.625 - 0.156)
+    ex.fill_limit(tp2, 0.05)                                         # TP2 只成交一部分，價格就回頭
+    ex.trigger("STOP_MARKET")                                        # 止損用 0.469 掛，交易所只剩 0.419
+    tr.step_manage(now)
+    assert not tr.store.positions and not ex.positions()
+    assert all(o["status"] != "NEW" for o in ex.orders.values())     # 剩下的止盈都撤掉了
+    row = tr.store.ledger[-1]
+    q, part, rest = 0.156, 0.05, 0.625 - 0.156 - 0.05
+    gross = q * 4 + part * 12 + rest * (100.1 - 100)
+    assert row["pnl_source"] == "fills"
+    est = gross - 0.0005 * (100 * 0.625 + q * 104 + part * 112 + rest * 100.1)
+    assert row["pnl_est"] == pytest.approx(est)
+
+
+def test_timeout_close_cancels_limit_tps_first(tmp_path):
+    ex = FakeExchange(df=candles([(101, 99, 100)] * 3))
+    tr, sink, _ = make_maker(tmp_path, ex)
+    tr.try_open(make_signal(interval="2H"))
+    tr.try_open(make_signal(interval="4H", t=T0 + pd.Timedelta(hours=4)))
+    for oid in list(ex.orders):
+        ex.fill_limit(oid)                                           # 兩張的限價進場都成交
+    tr.step_manage(T0 + pd.Timedelta(hours=4, minutes=5))
+    p2h = next(p for p in tr.store.positions.values() if p["interval"] == "2H")
+    ex.fill_limit(p2h["tp_ids"][0], 0.1)                             # 2H 的 TP1 部分成交
+    tr.step_manage(T0 + pd.Timedelta(hours=480, minutes=1))          # 2H 超過 240 根
+    assert [p["interval"] for p in tr.store.positions.values()] == ["4H"]
+    assert ex.positions()[("XUSDT", "LONG")] == pytest.approx(0.625)   # 4H 的數量沒被動到
+
+
+def test_restart_with_pending_limit_entry_does_not_place_stop(tmp_path):
+    ex = FakeExchange()
+    tr, sink, broker = make_maker(tmp_path, ex)
+    tr.try_open(make_signal())
+    broker.reconcile(tr.store, tr.notify)
+    assert not ex.algo and next(iter(tr.store.positions.values()))["pending"]
+
+
+def test_partial_limit_entry_does_not_wait_long_without_stop(tmp_path, monkeypatch):
+    import grid_trading.trader.bot as bot
+    clock = [1000.0]
+    monkeypatch.setattr(bot.time, "time", lambda: clock[0])
+    ex = FakeExchange(price=100.5, df=candles([(101, 99, 100)] * 3))
+    tr, sink, _ = make_maker(tmp_path, ex)
+    tr.try_open(make_signal())
+    pos = next(iter(tr.store.positions.values()))
+    ex.fill_limit(next(iter(ex.orders)), 0.3)
+    tr.step_manage(T0 + pd.Timedelta(minutes=1))
+    assert pos.get("pending")                         # 剛部分成交：先等一下
+    clock[0] += 61                                    # 還沒到 10 分鐘，但部分成交已經超過 60 秒
+    tr.step_manage(T0 + pd.Timedelta(minutes=2))
+    assert "pending" not in pos and ex.positions()[("XUSDT", "LONG")] == pytest.approx(0.625)
+    assert any(o["type"] == "STOP_MARKET" for o in ex.algo.values())
