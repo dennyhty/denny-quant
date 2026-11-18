@@ -1575,3 +1575,105 @@ def test_testnet_418_judged_by_our_own_request_count_not_shared_weight(monkeypat
     with pytest.raises(bmod.BinanceError):
         client.positions()
     assert client.banned_until == 0.0 and list(client._path_pause) == ["/fapi/v2/positionRisk"]
+
+
+# ---------- 暫停檔分模式、資金上限、--check ----------
+def test_paused_by_pause_or_mode_specific_file(tmp_path):
+    ex = FakeExchange()
+    tr, _ = make_trader(tmp_path, LiveBroker(ex, ex, Config()), ex)  # mode=testnet
+    assert not tr.paused()
+    (tmp_path / "pause-live").touch()
+    assert not tr.paused()          # 別的模式的暫停檔不影響
+    (tmp_path / "pause-testnet").touch()
+    assert tr.paused()
+    (tmp_path / "pause-testnet").unlink()
+    (tmp_path / "pause").touch()
+    assert tr.paused()              # pause 暫停所有模式
+    tr.try_open(make_signal())
+    assert not tr.store.positions
+
+
+def test_live_equity_is_capped_only_when_set():
+    class Ex:
+        def balance_usdt(self):
+            return 500.0
+    assert LiveBroker(Ex(), Ex(), Config(max_equity=300.0)).equity(None) == 300.0
+    assert LiveBroker(Ex(), Ex(), Config(max_equity=800.0)).equity(None) == 500.0
+    assert LiveBroker(Ex(), Ex(), Config()).equity(None) == 500.0
+
+
+def test_equity_cap_limits_position_size(tmp_path):
+    ex = FakeExchange(price=101.0)
+    sink = []
+    cfg = Config(mode="testnet", state_dir=tmp_path, coins=["X"], max_equity=100.0)
+    tr = Trader(cfg, ex, LiveBroker(ex, ex, cfg), Notifier("test", sink=sink), {"XUSDT": F})
+    tr.try_open(make_signal())
+    pos = next(iter(tr.store.positions.values()))
+    assert pos["base_usdt"] == pytest.approx(100.0 * cfg.risk)  # 用 100U 算風險，不是帳戶全部權益
+
+
+class _CheckClient:
+    """--check 用的假用戶端：只有讀取方法；任何寫入（下單、撤單、改設定）都會讓測試失敗。"""
+    def __init__(self, restrictions=None, fail=None):
+        self.restrictions, self.fail, self.calls = restrictions, fail, []
+
+    def __getattr__(self, name):
+        if name in ("market_order", "limit_order", "conditional_order", "cancel_order", "cancel_conditional",
+                    "set_hedge_mode", "set_leverage", "set_isolated"):
+            raise AssertionError(f"--check 不該呼叫 {name}")
+        raise AttributeError(name)
+
+    def sync_time(self): self.calls.append("time")
+    def balance_usdt(self):
+        if self.fail:
+            raise self.fail
+        return 500.0
+    def hedge_mode(self): return False
+    def positions(self): return {("BTCUSDT", "LONG"): 0.01}
+    def open_orders(self): return [{}, {}]
+    def open_conditionals(self): return [{}]
+    def api_restrictions(self, base):
+        if self.restrictions is None:
+            raise RuntimeError("sapi 不通")
+        return self.restrictions
+
+
+def test_check_is_read_only_and_reports():
+    import binance_trader as bt
+    out = []
+    rc = bt.preflight(_CheckClient({"enableWithdrawals": True, "enableFutures": True, "ipRestrict": False}),
+                      "live", 0.0025, 300.0, out=out.append)
+    text = "\n".join(out)
+    assert rc == 0
+    assert "500.00 U" in text and "300.00 U（資金上限 300 U）" in text and "0.75 U" in text
+    assert "第一次下單時自動切換" in text and "BTCUSDT LONG" in text
+    assert "一般訂單 2 張" in text and "條件單（algo）1 張" in text
+    assert text.count("嚴重警告") == 2  # 能提幣、沒限制 IP
+
+
+def test_check_survives_sapi_failure_and_skips_it_on_testnet():
+    import binance_trader as bt
+    out = []
+    assert bt.preflight(_CheckClient(None), "live", 0.0025, None, out=out.append) == 0
+    assert any("查不到 API 金鑰權限" in x for x in out) and any("未設" in x for x in out)
+    out = []
+    assert bt.preflight(_CheckClient(None), "testnet", 0.0025, None, out=out.append) == 0
+    assert any("[略過]" in x for x in out)
+
+
+def test_check_returns_1_with_ip_hint_on_invalid_key():
+    import binance_trader as bt
+    from grid_trading.trader.binance import BinanceError
+    out = []
+    rc = bt.preflight(_CheckClient(fail=BinanceError(401, -2015, "Invalid API-key, IP, or permissions")),
+                      "live", 0.0025, None, out=out.append)
+    assert rc == 1 and any("白名單" in x and "IPv6" in x for x in out)
+
+
+def test_check_flag_paper_exits_0_and_missing_keys_exit_1(monkeypatch, capsys):
+    import binance_trader as bt
+    assert bt.main(["--mode", "paper", "--check"]) == 0
+    monkeypatch.delenv("BINANCE_API_KEY", raising=False)
+    monkeypatch.delenv("BINANCE_API_SECRET", raising=False)
+    monkeypatch.setenv("TRADER_ALLOW_LIVE", "1")
+    assert bt.main(["--mode", "live", "--check"]) == 1

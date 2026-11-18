@@ -75,10 +75,12 @@ class BinanceFutures:
 
     # ---------- 底層 ----------
     def _request(self, method: str, path: str, params: dict | None = None, signed: bool = False, tries: int = 3,
-                 resend: bool = True, keyed: bool = False, session: requests.Session | None = None):
+                 resend: bool = True, keyed: bool = False, session: requests.Session | None = None,
+                 base: str | None = None):
         """resend=False（下單用）：逾時、5xx 不自己重送，丟 OrderUnknown 讓呼叫的人先查單再決定。
         429、-1021 和連線根本沒建立（ConnectTimeout）幣安沒有收到 / 沒有執行，照樣重送。
-        keyed：只帶 API 金鑰、不簽名（listenKey 用）；和簽名請求一樣，被封期間不送。"""
+        keyed：只帶 API 金鑰、不簽名（listenKey 用）；和簽名請求一樣，被封期間不送。
+        base：換一個網址（現貨 API 主機，--check 查 sapi 用）；簽名、對時、被封處理都和一般請求一樣。"""
         params = {k: v for k, v in (params or {}).items() if v is not None}
         headers = {}
         if keyed:
@@ -105,7 +107,7 @@ class BinanceFutures:
                 headers["X-MBX-APIKEY"] = self.key
             self._recent.append((time.time(), method, path))
             try:
-                resp = (session or self.session).request(method, self.base + path, params=q, headers=headers, timeout=self.timeout)
+                resp = (session or self.session).request(method, (base or self.base) + path, params=q, headers=headers, timeout=self.timeout)
             except requests.RequestException as e:
                 if not resend and not isinstance(e, requests.ConnectTimeout):
                     raise OrderUnknown(f"{path} 送出後沒有回應：{e}") from e
@@ -270,6 +272,14 @@ class BinanceFutures:
                 side = p.get("positionSide") or ("LONG" if float(p["positionAmt"]) > 0 else "SHORT")
                 out[(p["symbol"], side)] = amt
         return out
+
+    def signed_get(self, base: str, path: str, params: dict | None = None):
+        """簽名的 GET，但送到另一個主機（例如現貨 API https://api.binance.com 的 /sapi/...）；只讀，不重送。"""
+        return self._request("GET", path, params, signed=True, tries=1, base=base)
+
+    def api_restrictions(self, spot_base: str) -> dict:
+        """GET /sapi/v1/account/apiRestrictions：這把金鑰的權限（enableWithdrawals、enableFutures、ipRestrict 等）。"""
+        return self.signed_get(spot_base, "/sapi/v1/account/apiRestrictions")
 
     def hedge_mode(self) -> bool:
         return bool(self._request("GET", "/fapi/v1/positionSide/dual", signed=True).get("dualSidePosition"))
