@@ -1345,6 +1345,7 @@ def test_testnet_418_on_shared_gateway_only_pauses_that_path(monkeypatch, capsys
     # 用量真的很高：是我們自己的問題，照 Retry-After 停，但測試網最多停 TESTNET_BAN_CAP 秒
     resp_cls.headers = {"Retry-After": "29384", "x-mbx-used-weight-1m": "2300"}
     client._path_pause.clear()
+    client._recent.extend([(bmod.time.time(), "GET", "/x")] * 200)  # 我們自己一分鐘送了 200 個
     with pytest.raises(bmod.BinanceError):
         client.positions()
     assert bmod.time.time() + bmod.TESTNET_BAN_CAP < client.banned_until < bmod.time.time() + bmod.TESTNET_BAN_CAP + bmod.BAN_MARGIN + 5
@@ -1558,6 +1559,19 @@ def test_testnet_418_with_high_weight_is_capped(monkeypatch):
     resp_cls = type(Sess().request())
     resp_cls.headers = {"Retry-After": "25000", "x-mbx-used-weight-1m": "2300"}
     client.shared_ban_pause = 60.0
+    client._recent.extend([(bmod.time.time(), "GET", "/x")] * 200)
     with pytest.raises(bmod.BinanceError):
         client.positions()
     assert client.banned_until < bmod.time.time() + bmod.TESTNET_BAN_CAP + bmod.BAN_MARGIN + 5
+
+
+def test_testnet_418_judged_by_our_own_request_count_not_shared_weight(monkeypatch):
+    """2026-11-18 11:42：幣安回報用量 575（共用節點上所有人加起來），我們一分鐘只送 1 個，仍要當成共用節點被封。"""
+    bmod, client, Sess, _ = _client_with(418, "25456", monkeypatch)
+    resp_cls = type(Sess().request())
+    resp_cls.headers = {"Retry-After": "25456", "x-mbx-used-weight-1m": "575"}
+    resp_cls.text = '{"code":-1003,"msg":"Way too many requests; IP(15.158.242.104) banned until 1795027619945."}'
+    client.shared_ban_pause = 60.0
+    with pytest.raises(bmod.BinanceError):
+        client.positions()
+    assert client.banned_until == 0.0 and list(client._path_pause) == ["/fapi/v2/positionRisk"]
