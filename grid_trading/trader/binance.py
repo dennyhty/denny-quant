@@ -35,6 +35,7 @@ MAX_WAIT = 30   # 被限流時單次最多等幾秒
 BAN_MARGIN = 120  # 418 的 Retry-After 到了以後再多等幾秒才送請求
 SHARED_BAN_RETRIES = 6  # 測試網共用節點被封：同一個請求最多再送幾次
 SHARED_BAN_RETRY_WAIT = 0.5  # 每次重送前等幾秒
+TESTNET_BAN_CAP = 600  # 測試網被 418 時最多停幾秒（正式站照 Retry-After）
 SHARED_BAN_MAX_WEIGHT = 240  # 幣安回報的每分鐘用量在這以下（上限 2400 的一成）還被 418，不是我們送太多
 NOT_FOUND = -2013   # Order does not exist
 UNKNOWN_ORDER = -2011  # 取消時：Unknown order sent（已成交或已取消）
@@ -135,6 +136,9 @@ class BinanceFutures:
                     print(self._diagnose(method, path, q, resp), flush=True)
                     raise BinanceError(418, -1003, f"{path} 走到的共用節點被封，{self.shared_ban_pause:.0f} 秒後再試")
                 # 多等 BAN_MARGIN 秒才再送，免得剛好在解封前一刻送出
+                if self.shared_ban_pause:
+                    # 測試網：就算看起來是我們用量高，也最多停 TESTNET_BAN_CAP 秒再試（測試網只是驗證下單流程，停好幾個小時沒意義）
+                    ban = min(ban, TESTNET_BAN_CAP)
                 self.banned_until = time.time() + ban + BAN_MARGIN
                 self._save_ban()
                 until = time.strftime("%H:%M", time.gmtime(self.banned_until))
@@ -185,7 +189,9 @@ class BinanceFutures:
         try:
             used = int(resp.headers.get("x-mbx-used-weight-1m"))
         except (TypeError, ValueError):
-            return ""
+            # 回應沒帶用量（2026-11-18 兩次整段停了 2.5 小時、7 小時就是這樣漏掉的）：
+            # 拿我們自己最近一分鐘送出的請求數來判斷，不多就當作是共用節點被封
+            used = sum(1 for t, _, _ in self._recent if t > time.time() - 60)
         if used > SHARED_BAN_MAX_WEIGHT:
             return ""
         m = re.search(r"IP\(([0-9a-fA-F.:]+)\)", str(getattr(resp, "text", "")))
