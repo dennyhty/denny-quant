@@ -1342,12 +1342,12 @@ def test_testnet_418_on_shared_gateway_only_pauses_that_path(monkeypatch, capsys
     with pytest.raises(bmod.BinanceError):
         client.positions()  # 暫停期間這個路徑不送
     assert Sess.calls == 0
-    # 用量真的很高：是我們自己的問題，照 Retry-After 停
+    # 用量真的很高：是我們自己的問題，照 Retry-After 停，但測試網最多停 TESTNET_BAN_CAP 秒
     resp_cls.headers = {"Retry-After": "29384", "x-mbx-used-weight-1m": "2300"}
     client._path_pause.clear()
     with pytest.raises(bmod.BinanceError):
         client.positions()
-    assert client.banned_until > bmod.time.time() + 29000
+    assert bmod.time.time() + bmod.TESTNET_BAN_CAP < client.banned_until < bmod.time.time() + bmod.TESTNET_BAN_CAP + bmod.BAN_MARGIN + 5
 
 
 def test_testnet_shared_gateway_418_retry_gets_through(monkeypatch, capsys):
@@ -1539,3 +1539,25 @@ def test_partial_limit_entry_does_not_wait_long_without_stop(tmp_path, monkeypat
     tr.step_manage(T0 + pd.Timedelta(minutes=2))
     assert "pending" not in pos and ex.positions()[("XUSDT", "LONG")] == pytest.approx(0.625)
     assert any(o["type"] == "STOP_MARKET" for o in ex.algo.values())
+
+
+def test_testnet_418_without_weight_header_still_treated_as_shared(monkeypatch):
+    """2026-11-18：418 沒帶 x-mbx-used-weight-1m，舊版就照 Retry-After 整段停好幾個小時。"""
+    bmod, client, Sess, _ = _client_with(418, "25000", monkeypatch)
+    resp_cls = type(Sess().request())
+    resp_cls.text = '{"code":-1003,"msg":"Way too many requests; IP(15.158.242.104) banned until 1794900296244."}'
+    client.shared_ban_pause = 60.0
+    with pytest.raises(bmod.BinanceError):
+        client.positions()
+    assert client.banned_until == 0.0
+    assert list(client._path_pause) == ["/fapi/v2/positionRisk"]
+
+
+def test_testnet_418_with_high_weight_is_capped(monkeypatch):
+    bmod, client, Sess, _ = _client_with(418, "25000", monkeypatch)
+    resp_cls = type(Sess().request())
+    resp_cls.headers = {"Retry-After": "25000", "x-mbx-used-weight-1m": "2300"}
+    client.shared_ban_pause = 60.0
+    with pytest.raises(bmod.BinanceError):
+        client.positions()
+    assert client.banned_until < bmod.time.time() + bmod.TESTNET_BAN_CAP + bmod.BAN_MARGIN + 5
