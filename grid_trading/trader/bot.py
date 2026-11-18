@@ -82,6 +82,8 @@ class Config:
     maker_entry: bool = False
     maker_tp: bool = False
     entry_wait: float = 600.0  # 限價進場最多等幾秒，之後取消、剩下的改市價
+    # 資金上限（USDT）：實盤 / 測試網算倉位時，權益最多當作這個數字（帳戶多放的錢不動用）；None = 不設。紙上交易不看這個
+    max_equity: float | None = None
 
 
 def bar_close(now: pd.Timestamp, interval: str) -> pd.Timestamp:
@@ -342,7 +344,9 @@ class Trader:
 
     # ---------- 進場 ----------
     def paused(self) -> bool:
-        return (self.cfg.state_dir / "pause").exists()
+        """pause 檔暫停所有模式，pause-<mode>（pause-live、pause-testnet）只暫停那個模式。"""
+        d = self.cfg.state_dir
+        return (d / "pause").exists() or (d / f"pause-{self.cfg.mode}").exists()
 
     def due(self, now: pd.Timestamp) -> list[str]:
         """這次要處理的週期：收盤時間比上次處理的新。第一次啟動只記下時間、不開單（避免開到舊訊號）。"""
@@ -417,7 +421,7 @@ class Trader:
         if not reason and self.cfg.min_adv > 0 and adv is not None and adv < self.cfg.min_adv:
             reason = f"近 30 天日均成交額 {adv / 1e4:,.0f} 萬 U，低於門檻 {self.cfg.min_adv / 1e4:,.0f} 萬 U"
         if not reason and self.paused():
-            reason = "已暫停開新倉（pause 檔存在）"
+            reason = f"已暫停開新倉（pause 或 pause-{self.cfg.mode} 檔存在）"
         if not reason and not can_open(len(self.store.positions), self.cfg.rules):
             reason = f"同時持倉已達上限 {self.cfg.rules.max_open} 張"
         if reason:
@@ -734,7 +738,9 @@ class LiveBroker:
         self._extra: dict[tuple, float] = {}  # 已經提醒過的「交易所比記錄多」：同一個差異只推一次
 
     def equity(self, store: Store) -> float:
-        return self.client.balance_usdt()
+        bal = self.client.balance_usdt()
+        cap = self.cfg.max_equity
+        return min(bal, cap) if cap is not None else bal
 
     def begin_step(self) -> None:
         self._open = None  # 每輪重抓一次掛單（所有幣一次抓完，不是每個幣打一個請求）

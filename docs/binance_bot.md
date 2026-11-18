@@ -65,17 +65,41 @@ systemctl enable --now binance-trader@testnet
 
 ## 4. 正式帳戶（測試網跑過再做）
 
-- 在幣安正式帳戶建 API 金鑰：只勾「讀取」和「合約交易」，**不要勾提幣**，IP 限制填這台 VPS 的 IP。
-- 把 `trader.env` 換成正式金鑰，加一行 `TRADER_ALLOW_LIVE=1`，然後 `systemctl enable --now binance-trader@live`。
-- 一開始只放 100–300U 在合約帳戶。
+1. 用專用的合約帳戶（可以的話開子帳戶），帳戶裡**不要有手動倉位**（不是程式開的倉位只提醒、不管理）。
+2. 轉 300U 進合約帳戶（先小額，穩了再加）。
+3. 查 VPS 的 IP（IPv4 和 IPv6 都查）：
+   ```
+   curl -4 -s ifconfig.me; echo; curl -6 -s ifconfig.me; echo
+   ```
+4. 建 API 金鑰：只勾「讀取」和「合約」，**不要勾提幣、萬能劃轉、現貨**；IP 限制填上一步的 IP。
+5. 更新程式並重開測試網（測試網照舊讀 `trader.env`）：
+   ```
+   sudo -u trader bash -c 'cd /home/trader/grid-trading && git pull'
+   sudo cp /home/trader/grid-trading/deploy/binance-trader.service /etc/systemd/system/binance-trader@.service
+   sudo systemctl daemon-reload && sudo systemctl restart binance-trader@testnet
+   ```
+6. 實盤的金鑰另放一個檔（服務會在 `trader.env` 之後再讀 `trader-<模式>.env`，後面的蓋掉前面的）：
+   ```
+   sudo -u trader nano /home/trader/trader-live.env
+   ```
+   內容：`BINANCE_API_KEY=...`、`BINANCE_API_SECRET=...`、`TRADER_ALLOW_LIVE=1`，想限制動用的資金再加 `TRADER_MAX_EQUITY=300`
+   （算倉位的權益最多當 300U；命令列 `--max-equity` 優先）。存檔後 `sudo chmod 600 /home/trader/trader-live.env`。
+7. 上線前檢查（唯讀，不下單、不改設定、不推 Telegram）：
+   ```
+   sudo -u trader bash -c 'cd /home/trader/grid-trading && set -a && . ../trader.env && . ../trader-live.env && set +a && .venv/bin/python binance_trader.py --mode live --check'
+   ```
+   會列出權益、雙向持倉狀態、現有持倉和掛單、金鑰權限（能提幣或沒限制 IP 會大聲警告）、每筆風險約幾 U。有 `[警告]` 先處理再往下。
+8. 啟動：`sudo systemctl enable --now binance-trader@live`。啟動時 Telegram 會推一則「幣安實盤啟動，權益…」。
+9. 第一張單成交後，到幣安 App 確認這張單有 1 個止損 + 3 個止盈。
 
 ## 日常操作
 
 | 要做的事 | 指令 |
 | --- | --- |
 | 暫停開新倉（已開的照常管理） | `touch /home/trader/grid-trading/trader_state/pause` |
-| 恢復 | `rm /home/trader/grid-trading/trader_state/pause` |
-| 看紀錄 | `journalctl -u binance-trader@testnet -f` |
+| 只暫停實盤開新倉 | `touch /home/trader/grid-trading/trader_state/pause-live`（測試網用 `pause-testnet`；`pause` 則全部模式一起暫停） |
+| 恢復 | `rm /home/trader/grid-trading/trader_state/pause`（或 `pause-live`） |
+| 看紀錄 | `journalctl -u binance-trader@testnet -f`（實盤：`journalctl -u binance-trader@live -f`） |
 | 更新程式 | `su - trader -c 'cd grid-trading && git pull'`，再 `systemctl restart binance-trader@testnet` |
 | 檢查某個幣在程式和幣安上對不對得上（唯讀） | `su - trader -c 'cd grid-trading && set -a && . /home/trader/trader.env && set +a && .venv/bin/python deploy/trader_diag.py APTUSDT'` |
 | 完全停止 | `systemctl stop binance-trader@testnet`（交易所上的止損止盈還在，倉位不會沒保護） |
