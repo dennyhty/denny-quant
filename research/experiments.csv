@@ -70,3 +70,9 @@ ts,experiment_id,family,hypothesis,params,data_source,period,trades,exp_r,se_clu
 2026-11-15T17:24:41Z,vegas_improve-9e330f28,vegas_improve,合併：掛單+流動性門檻(+空單對沖),"{""test"": ""combined""}",binance,2020-2026,17793,0.152,,5.26,1.73,info,signals/report_vegas_improve_20261115.md,configs=3; 事後組合
 2026-11-15T17:24:41Z,vegas_improve-0d537413,vegas_improve,搭配：放空等權山寨籃子、做多 BTC（1 倍 / beta 調整），每週,"{""test"": ""short_alt_long_btc""}",binance,2020-2026,17793,,,0.48,0.18,fail,signals/report_vegas_improve_20261115.md,configs=2
 2026-11-15T17:24:41Z,vegas_improve-af664953,vegas_improve,搭配：資金費率排序多空（五分位，每週）,"{""test"": ""funding_sort_ls""}",binance,2020-2026,17793,,,0.9,0.35,fail,signals/report_vegas_improve_20261115.md,configs=1
+2026-11-20T16:43:17Z,vegas_params-659e78c2,vegas_params,維加斯換參數：ch288,"{""variant"": ""ch288""}",binance,2020-2026,6864,0.038,,0.95,0.46,fail,signals/report_vegas_params_20261120.md,configs=2; 2H+4H
+2026-11-20T16:43:17Z,vegas_params-9ffd91ea,vegas_params,維加斯換參數：ch576,"{""variant"": ""ch576""}",binance,2020-2026,3814,-0.006,,-0.18,-0.07,fail,signals/report_vegas_params_20261120.md,configs=2; 2H+4H
+2026-11-20T16:43:17Z,vegas_params-bca48206,vegas_params,維加斯換參數：no_e12,"{""variant"": ""no_e12""}",binance,2020-2026,18653,0.087,,2.44,1.2,fail,signals/report_vegas_params_20261120.md,configs=2; 2H+4H
+2026-11-20T16:43:17Z,vegas_params-7352eb36,vegas_params,維加斯換參數：e12_trig,"{""variant"": ""e12_trig""}",binance,2020-2026,23351,0.04,,1.25,0.6,fail,signals/report_vegas_params_20261120.md,configs=2; 2H+4H
+2026-11-20T16:43:17Z,vegas_params-c42dfc61,vegas_params,維加斯換參數：stack2,"{""variant"": ""stack2""}",binance,2020-2026,12328,0.09,,2.23,1.13,fail,signals/report_vegas_params_20261120.md,configs=2; 2H+4H
+2026-11-20T16:43:17Z,vegas_params-d619d941,vegas_params,維加斯換參數：stack3,"{""variant"": ""stack3""}",binance,2020-2026,10198,0.087,,1.98,1.04,fail,signals/report_vegas_params_20261120.md,configs=2; 2H+4H
