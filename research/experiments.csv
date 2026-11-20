@@ -76,5 +76,4 @@ ts,experiment_id,family,hypothesis,params,data_source,period,trades,exp_r,se_clu
 2026-11-20T16:43:17Z,vegas_params-7352eb36,vegas_params,維加斯換參數：e12_trig,"{""variant"": ""e12_trig""}",binance,2020-2026,23351,0.04,,1.25,0.6,fail,signals/report_vegas_params_20261120.md,configs=2; 2H+4H
 2026-11-20T16:43:17Z,vegas_params-c42dfc61,vegas_params,維加斯換參數：stack2,"{""variant"": ""stack2""}",binance,2020-2026,12328,0.09,,2.23,1.13,fail,signals/report_vegas_params_20261120.md,configs=2; 2H+4H
 2026-11-20T16:43:17Z,vegas_params-d619d941,vegas_params,維加斯換參數：stack3,"{""variant"": ""stack3""}",binance,2020-2026,10198,0.087,,1.98,1.04,fail,signals/report_vegas_params_20261120.md,configs=2; 2H+4H
-=======
 2026-11-20T17:39:50Z,vegas_timeframes-1e522d82,vegas_timeframes,實盤維加斯換到其他週期：15m、1H、12H、1D、2D、3D、1W（時點幣池、扣成本、無 240 根上限）,"{""tfs"": [""15m"", ""1H"", ""12H"", ""1D"", ""2D"", ""3D"", ""1W""]}",binance,2020-2026,1859,0.134,0.05,2.69,,fail,signals/report_vegas_timeframes_20261120.md,"configs=7; best 12H +0.134R net but 2024+ +0.011R, strict t 1.85; 15m/1H/2D/3D negative; 1W 28 trades; 1M untestable"
