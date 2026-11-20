@@ -46,7 +46,7 @@ from .sizing import Filters, fmt, plan_size, split
 
 BAR = {"2H": pd.Timedelta(hours=2), "4H": pd.Timedelta(hours=4)}
 ORDER = ("2H", "4H")  # 同一個時間點兩個週期都有訊號時，2H 先做
-MAX_BARS = 240
+KLINE_LIMIT = 1500  # 幣安單次 K 線上限；持倉沒有時間上限，抓的根數要夠涵蓋持倉期間
 LABEL = {"paper": "幣安紙上交易", "testnet": "幣安測試網", "live": "幣安實盤"}
 AUDIT_EVERY = 3600.0  # 多久比對一次交易所倉位和程式記錄（秒）；一次只用一個 positions 請求
 OUTAGE_GRACE = 600.0  # 連續失敗超過幾秒才推警報（短暫斷線不吵人）
@@ -691,8 +691,8 @@ class PaperBroker:
             return None  # 用 K 線重算，隔幾分鐘算結果一樣，不必每輪都抓
         pos["checked"] = now.timestamp()
         sig = signal_from(pos["signal"])
-        df = self.data.klines(sig.symbol, sig.interval, MAX_BARS + 20)
-        res = track(sig, df[df["time"] <= now], self.cfg.fee, MAX_BARS)
+        df = self.data.klines(sig.symbol, sig.interval, KLINE_LIMIT)
+        res = track(sig, df[df["time"] <= now], self.cfg.fee)
         for e in res.events[pos["events"]:]:
             if e.kind in ("TP1", "TP2", "TP3", "STOP_MOVED", "TRAIL_MOVED"):
                 notify(f"{_pair(sig.symbol)} {sig.interval} {_side_text(sig.side)}：{e.text}")
@@ -1361,8 +1361,9 @@ class LiveBroker:
             # 追蹤止損：TP3 那根 K 線起的最高價（做多）/ 最低價（做空）往回 3 ATR，每根收盤後更新
             last_close = int(bar_close(now, pos["interval"]).timestamp() * 1000)
             if pos.get("trail_checked") != last_close:
-                df = self.client.klines(pos["symbol"], pos["interval"], MAX_BARS + 20)
                 start = pd.Timestamp(pos["trail_from"], unit="ms", tz="UTC").floor(bar)
+                need = int((now - start) / bar) + 20
+                df = self.client.klines(pos["symbol"], pos["interval"], min(KLINE_LIMIT, need))
                 seg = df[(df["time"] >= start) & (df["time"] + bar <= now)]
                 if len(seg):
                     ext = float(seg["high"].max() if d > 0 else seg["low"].min())

@@ -13,7 +13,7 @@ from .tracker import track
 
 
 def trades_for(strategy: Strategy, df: pd.DataFrame, symbol: str, interval: str,
-               fee: float = 0.0005, max_bars: int = 240) -> list[dict]:
+               fee: float = 0.0005, max_bars: int | None = None) -> list[dict]:
     df = df.reset_index(drop=True)
     busy_until = None
     out = []
