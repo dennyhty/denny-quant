@@ -1371,10 +1371,4 @@ class LiveBroker:
                         self.move_stop(pos, ts)
                         notify(f"{name}：追蹤止損移到 {ts:.6g}")
                 pos["trail_checked"] = last_close
-        opened = pd.Timestamp(pos["signal"]["time"], unit="ms", tz="UTC")
-        if now - opened >= MAX_BARS * bar:
-            self._cancel_tps(pos)  # 先撤止盈（限價止盈部分成交的數量要先扣掉），市價才不會平到同幣同向另一張單
-            self._close_rest(pos, "x")
-            notify(f"{name}：超過 {MAX_BARS} 根未結束，市價平倉")
-            return self.finish(pos)
         return None

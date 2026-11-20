@@ -830,12 +830,12 @@ def test_close_with_unknown_result_is_looked_up_before_resending(tmp_path):
         return r
 
     ex.market_order = flaky
-    now = T0 + pd.Timedelta(hours=480, minutes=1)   # 2H 超過 240 根，4H 還沒
-    tr.step_manage(now)
-    assert any("管理失敗" in m for m in sink)
-    tr.step_manage(now + pd.Timedelta(minutes=1))
+    pos2h = next(p for p in tr.store.positions.values() if p["interval"] == "2H")
+    with pytest.raises(OrderUnknown):
+        tr.broker._close_rest(pos2h, "t")
+    tr.broker._close_rest(pos2h, "t")
     assert calls == [False, True]
-    assert len(tr.store.positions) == 1 and tr.store.ledger[-1]["interval"] == "2H"
+    assert pos2h["remaining"] == 0.0                                   # 2H 的市價平倉重送時只查單、不重下
     assert ex.positions()[("XUSDT", "LONG")] == pytest.approx(0.625)   # 4H 的數量沒被動到
 
 
@@ -1500,21 +1500,6 @@ def test_limit_tp_fill_moves_stop_and_partial_tp_is_booked_when_stopped(tmp_path
     assert row["pnl_source"] == "fills"
     est = gross - 0.0005 * (100 * 0.625 + q * 104 + part * 112 + rest * 100.1)
     assert row["pnl_est"] == pytest.approx(est)
-
-
-def test_timeout_close_cancels_limit_tps_first(tmp_path):
-    ex = FakeExchange(df=candles([(101, 99, 100)] * 3))
-    tr, sink, _ = make_maker(tmp_path, ex)
-    tr.try_open(make_signal(interval="2H"))
-    tr.try_open(make_signal(interval="4H", t=T0 + pd.Timedelta(hours=4)))
-    for oid in list(ex.orders):
-        ex.fill_limit(oid)                                           # 兩張的限價進場都成交
-    tr.step_manage(T0 + pd.Timedelta(hours=4, minutes=5))
-    p2h = next(p for p in tr.store.positions.values() if p["interval"] == "2H")
-    ex.fill_limit(p2h["tp_ids"][0], 0.1)                             # 2H 的 TP1 部分成交
-    tr.step_manage(T0 + pd.Timedelta(hours=480, minutes=1))          # 2H 超過 240 根
-    assert [p["interval"] for p in tr.store.positions.values()] == ["4H"]
-    assert ex.positions()[("XUSDT", "LONG")] == pytest.approx(0.625)   # 4H 的數量沒被動到
 
 
 def test_restart_with_pending_limit_entry_does_not_place_stop(tmp_path):
