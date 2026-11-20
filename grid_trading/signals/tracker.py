@@ -7,7 +7,7 @@
 - 所有 TP 都觸及後還有剩下的倉位（exit["trail"] 有設）：止損改成追蹤止損，
   = 進場後最高價（做多）/最低價（做空）往回 trail 的距離，只會往有利方向移動。
 - 同一根 K 線同時碰到止損和 TP 時，保守假設先碰止損。
-- 超過 max_bars 根還沒結束，就用收盤價平掉剩下的倉位。
+- max_bars 預設 None：沒有時間上限，只有止損、止盈、追蹤止損出場（和實盤一致）。傳入數字才會在超過那根數後收盤平倉。
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def breakeven(sig: Signal, fee: float) -> float:
     return sig.price * (1 + sig.direction * 2 * fee)
 
 
-def track(sig: Signal, candles: pd.DataFrame, fee: float = 0.0005, max_bars: int = 240) -> TrackResult:
+def track(sig: Signal, candles: pd.DataFrame, fee: float = 0.0005, max_bars: int | None = None) -> TrackResult:
     """candles：K 線（time 是開盤時間），由舊到新。只看開盤時間 >= 訊號時間的部分。"""
     d = sig.direction
     risk = abs(sig.price - sig.sl)
@@ -125,7 +125,7 @@ def track(sig: Signal, candles: pd.DataFrame, fee: float = 0.0005, max_bars: int
                 if d * (ts - (announced if announced is not None else be)) >= trail / 6:
                     announced = ts
                     res.events.append(Event("TRAIL_MOVED", t, ts, f"追蹤止損移到 {_fmt(ts)}"))
-        if res.bars >= max_bars:
+        if max_bars is not None and res.bars >= max_bars:
             close_part(res.remaining, float(close))
             res.events.append(Event("TIMEOUT", t, float(close), f"超過 {max_bars} 根未結束，收盤平倉"))
             res.status = "CLOSED"
