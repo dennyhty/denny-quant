@@ -31,6 +31,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -39,7 +40,7 @@ from ..binance_history import binance_symbols
 from ..signals import get
 from ..signals.strategy import LONG, Signal
 from ..signals.tracker import breakeven, track
-from ..universe import TOP100
+from ..universe import TOP100, binance_perp_for, monthly_top
 from .binance import DEAD, POST_ONLY_REJECT, BinanceError, BinanceFutures, OrderUnknown
 from .risk import RiskRules, can_open, risk_multiplier
 from .sizing import Filters, fmt, plan_size, split
@@ -69,6 +70,9 @@ class Config:
     rules: RiskRules = field(default_factory=RiskRules)
     state_dir: Path = Path("trader_state")
     coins: list[str] = field(default_factory=lambda: list(TOP100))
+    # True：每月從 CoinMarketCap 更新市值前 100 名（取代 coins），名單存在 state_dir/universe.json。
+    # binance_trader.py 預設開啟；測試和 --fixed-coins 用上面固定的 coins
+    auto_coins: bool = False
     bars: int = 1000
     poll: float = 60.0         # 持倉管理多久看一次（秒）；止損、止盈掛在交易所，這裡只負責追蹤和記帳
     poll_stream: float = 300.0  # 即時推送健康時多久輪詢一次（成交會叫醒主迴圈，這只是保險）
@@ -317,10 +321,55 @@ class Trader:
         self.last_manage_ok: float | None = None
         self.strategy = get("vegas_trend")
         self.symbols = {}
-        for coin in cfg.coins:
-            sym = binance_symbols(coin)[-1]
-            if sym in filters:
+        self._coins_month: str | None = None
+        self._coins_warned: str | None = None
+        if cfg.auto_coins:
+            self.refresh_coins(announce=False)
+        else:
+            self._set_coins(cfg.coins)
+
+    def _set_coins(self, coins: list[str]) -> None:
+        listed = set(self.filters)
+        self.symbols = {}
+        for coin in coins:
+            sym = binance_perp_for(coin, listed)
+            if sym and sym not in self.symbols:
                 self.symbols[sym] = coin
+
+    def refresh_coins(self, announce: bool = True) -> None:
+        """每月更新要掃描的幣（市值前 100 名）。已經有的持倉不受影響，照常管理到出場。"""
+        path = self.cfg.state_dir / "universe.json"
+        try:
+            cached = json.loads(path.read_text())
+        except (OSError, ValueError):
+            cached = None
+        rec = monthly_top(cached, now=datetime.fromtimestamp(self._clock(), timezone.utc))
+        if rec["status"] == "fresh":
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")  # 測試網和實盤共用這個檔
+                tmp.write_text(json.dumps({k: rec[k] for k in ("month", "coins", "fetched_at")}, ensure_ascii=False))
+                os.replace(tmp, path)
+            except OSError as e:
+                print(f"幣種名單存不了：{e}", flush=True)
+        if rec["status"] in ("stale", "fallback"):
+            month = datetime.fromtimestamp(self._clock(), timezone.utc).strftime("%Y-%m")
+            if self._coins_warned != month:
+                self._coins_warned = month
+                what = f"沿用 {rec['month']} 的名單" if rec["status"] == "stale" else "用內建的備用名單"
+                self.notify(f"市值前 100 名抓不到（{rec.get('error')}），{what}，之後會再試")
+        if rec["month"] == self._coins_month and self.symbols:
+            return
+        old = set(self.symbols)
+        self._set_coins(rec["coins"])
+        self._coins_month = rec["month"]
+        if announce and old:
+            new = set(self.symbols)
+            add, gone = sorted(new - old), sorted(old - new)
+            if add or gone:
+                names = lambda xs: "、".join(_pair(x) for x in xs) or "無"
+                self.notify(f"幣種名單每月更新（市值前 100 名，{len(new)} 個）：新增 {names(add)}；"
+                            f"移除 {names(gone)}（已有的持倉照常管理）")
 
     def _abort_corrupt(self, err: StateCorrupt) -> None:
         """狀態檔壞了又沒備份：推播後結束。systemd 每 30 秒重開一次，同一個壞檔只推一次（記在 .alerted）。"""
@@ -362,6 +411,8 @@ class Trader:
         return out
 
     def find_signals(self, interval: str, close: pd.Timestamp) -> list[Signal]:
+        if self.cfg.auto_coins:
+            self.refresh_coins()
         def one(sym):
             try:
                 df = self.data.klines(sym, interval, self.cfg.bars)
