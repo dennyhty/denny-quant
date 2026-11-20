@@ -1,0 +1,830 @@
+{
+ "15m": {
+  "verdict": "FAIL 未通過：樣本內平均 R > 0、樣本外平均 R > 0、嚴格群集 t（四種分群取最小）、Deflated Sharpe、贏過隨機進場、拿掉前 5 大幣後 > 0、拿掉最好的一年後 > 0、拿掉最好的 5 個出場日後 > 0（另有未執行的檢查，結論也不完整 incomplete）",
+  "info": {
+   "trades": 122518,
+   "mean_r": -0.19058002210067457,
+   "rcol": "r_net",
+   "first_entry": "2020-02-01 01:15:00+00:00",
+   "last_exit": "2026-10-31 23:30:00+00:00",
+   "symbols": 594,
+   "sharpe_annual": -6.468213246832854,
+   "days": 2465,
+   "skew": 0.5348724181716547,
+   "kurt": 6.062125805960006
+  },
+  "checks": {
+   "n_trades": {
+    "label": "筆數",
+    "value": 122518,
+    "threshold": ">= 300",
+    "status": "pass"
+   },
+   "mean_in_sample": {
+    "label": "樣本內平均 R > 0",
+    "value": -0.1981018332894427,
+    "threshold": "> 0",
+    "status": "fail"
+   },
+   "mean_oos": {
+    "label": "樣本外平均 R > 0",
+    "value": -0.18219096893817388,
+    "threshold": "> 0 且筆數 >= 100",
+    "status": "fail"
+   },
+   "cluster_t": {
+    "label": "嚴格群集 t（四種分群取最小）",
+    "value": -18.48083478722665,
+    "threshold": 4.031846441724585,
+    "status": "fail"
+   },
+   "deflated_sharpe": {
+    "label": "Deflated Sharpe",
+    "value": 0.0,
+    "threshold": ">= 0.95",
+    "status": "fail"
+   },
+   "beats_random": {
+    "label": "贏過隨機進場",
+    "value": 0.2403266553473996,
+    "threshold": "> 2",
+    "status": "fail"
+   },
+   "plateau": {
+    "label": "參數高原",
+    "value": null,
+    "threshold": "所有鄰近 > 0 且 >= 主設定的 50%",
+    "status": "skipped"
+   },
+   "baseline_corr": {
+    "label": "與實盤基準的相關性",
+    "value": 0.22528466443946873,
+    "threshold": "< 0.5",
+    "status": "pass"
+   },
+   "robust_drop_coins": {
+    "label": "拿掉前 5 大幣後 > 0",
+    "value": -0.19507589279417276,
+    "threshold": "> 0",
+    "status": "fail"
+   },
+   "robust_drop_year": {
+    "label": "拿掉最好的一年後 > 0",
+    "value": -0.18770918416193588,
+    "threshold": "> 0",
+    "status": "fail"
+   },
+   "robust_drop_days": {
+    "label": "拿掉最好的 5 個出場日後 > 0",
+    "value": -0.19652790908340317,
+    "threshold": "> 0",
+    "status": "fail"
+   },
+   "sides": {
+    "label": "多空拆分（參考）",
+    "value": {
+     "long": -0.23022355346436887,
+     "short": -0.15314715738056323
+    },
+    "threshold": null,
+    "status": "info"
+   }
+  }
+ },
+ "1H": {
+  "verdict": "FAIL 未通過：樣本內平均 R > 0、樣本外平均 R > 0、嚴格群集 t（四種分群取最小）、Deflated Sharpe、贏過隨機進場、與實盤基準的相關性、拿掉前 5 大幣後 > 0、拿掉最好的一年後 > 0、拿掉最好的 5 個出場日後 > 0（另有未執行的檢查，結論也不完整 incomplete）",
+  "info": {
+   "trades": 28003,
+   "mean_r": -0.042492291165260876,
+   "rcol": "r_net",
+   "first_entry": "2020-02-01 19:00:00+00:00",
+   "last_exit": "2026-10-31 19:00:00+00:00",
+   "symbols": 590,
+   "sharpe_annual": -0.8050365285509306,
+   "days": 2465,
+   "skew": 2.682658255602517,
+   "kurt": 19.812140221011667
+  },
+  "checks": {
+   "n_trades": {
+    "label": "筆數",
+    "value": 28003,
+    "threshold": ">= 300",
+    "status": "pass"
+   },
+   "mean_in_sample": {
+    "label": "樣本內平均 R > 0",
+    "value": -0.021732879966857525,
+    "threshold": "> 0",
+    "status": "fail"
+   },
+   "mean_oos": {
+    "label": "樣本外平均 R > 0",
+    "value": -0.06701452755907508,
+    "threshold": "> 0 且筆數 >= 100",
+    "status": "fail"
+   },
+   "cluster_t": {
+    "label": "嚴格群集 t（四種分群取最小）",
+    "value": -2.3374157423081847,
+    "threshold": 4.031846441724585,
+    "status": "fail"
+   },
+   "deflated_sharpe": {
+    "label": "Deflated Sharpe",
+    "value": 9.757491858941592e-08,
+    "threshold": ">= 0.95",
+    "status": "fail"
+   },
+   "beats_random": {
+    "label": "贏過隨機進場",
+    "value": 1.8179606190689859,
+    "threshold": "> 2",
+    "status": "fail"
+   },
+   "plateau": {
+    "label": "參數高原",
+    "value": null,
+    "threshold": "所有鄰近 > 0 且 >= 主設定的 50%",
+    "status": "skipped"
+   },
+   "baseline_corr": {
+    "label": "與實盤基準的相關性",
+    "value": 0.5125746686293785,
+    "threshold": "< 0.5",
+    "status": "fail"
+   },
+   "robust_drop_coins": {
+    "label": "拿掉前 5 大幣後 > 0",
+    "value": -0.05297180263531833,
+    "threshold": "> 0",
+    "status": "fail"
+   },
+   "robust_drop_year": {
+    "label": "拿掉最好的一年後 > 0",
+    "value": -0.06758220341261843,
+    "threshold": "> 0",
+    "status": "fail"
+   },
+   "robust_drop_days": {
+    "label": "拿掉最好的 5 個出場日後 > 0",
+    "value": -0.05953615393511729,
+    "threshold": "> 0",
+    "status": "fail"
+   },
+   "sides": {
+    "label": "多空拆分（參考）",
+    "value": {
+     "long": -0.08943737440163105,
+     "short": 0.001544919588823233
+    },
+    "threshold": null,
+    "status": "info"
+   }
+  }
+ },
+ "2H": {
+  "verdict": "FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe（另有未執行的檢查，結論也不完整 incomplete）",
+  "info": {
+   "trades": 11339,
+   "mean_r": 0.07941561317119063,
+   "rcol": "r_net",
+   "first_entry": "2020-02-01 08:00:00+00:00",
+   "last_exit": "2026-10-31 04:00:00+00:00",
+   "symbols": 545,
+   "sharpe_annual": 0.9914363550793548,
+   "days": 2465,
+   "skew": 6.477746077321783,
+   "kurt": 92.14617463370783
+  },
+  "checks": {
+   "n_trades": {
+    "label": "筆數",
+    "value": 11339,
+    "threshold": ">= 300",
+    "status": "pass"
+   },
+   "mean_in_sample": {
+    "label": "樣本內平均 R > 0",
+    "value": 0.09032293030504353,
+    "threshold": "> 0",
+    "status": "pass"
+   },
+   "mean_oos": {
+    "label": "樣本外平均 R > 0",
+    "value": 0.06707517297783339,
+    "threshold": "> 0 且筆數 >= 100",
+    "status": "pass"
+   },
+   "cluster_t": {
+    "label": "嚴格群集 t（四種分群取最小）",
+    "value": 2.3755855227734304,
+    "threshold": 4.031846441724585,
+    "status": "fail"
+   },
+   "deflated_sharpe": {
+    "label": "Deflated Sharpe",
+    "value": 0.1610803536118478,
+    "threshold": ">= 0.95",
+    "status": "fail"
+   },
+   "beats_random": {
+    "label": "贏過隨機進場",
+    "value": 3.770061308295476,
+    "threshold": "> 2",
+    "status": "pass"
+   },
+   "plateau": {
+    "label": "參數高原",
+    "value": null,
+    "threshold": "所有鄰近 > 0 且 >= 主設定的 50%",
+    "status": "skipped"
+   },
+   "baseline_corr": {
+    "label": "與實盤基準的相關性",
+    "value": null,
+    "threshold": "< 0.5",
+    "status": "skipped"
+   },
+   "robust_drop_coins": {
+    "label": "拿掉前 5 大幣後 > 0",
+    "value": 0.06569946695193318,
+    "threshold": "> 0",
+    "status": "pass"
+   },
+   "robust_drop_year": {
+    "label": "拿掉最好的一年後 > 0",
+    "value": 0.053255984251278164,
+    "threshold": "> 0",
+    "status": "pass"
+   },
+   "robust_drop_days": {
+    "label": "拿掉最好的 5 個出場日後 > 0",
+    "value": 0.043726516126304765,
+    "threshold": "> 0",
+    "status": "pass"
+   },
+   "sides": {
+    "label": "多空拆分（參考）",
+    "value": {
+     "long": -0.00621049939311617,
+     "short": 0.15882680986520012
+    },
+    "threshold": null,
+    "status": "info"
+   }
+  }
+ },
+ "4H": {
+  "verdict": "FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe（另有未執行的檢查，結論也不完整 incomplete）",
+  "info": {
+   "trades": 6441,
+   "mean_r": 0.11559820944855119,
+   "rcol": "r_net",
+   "first_entry": "2020-03-02 16:00:00+00:00",
+   "last_exit": "2026-10-31 20:00:00+00:00",
+   "symbols": 484,
+   "sharpe_annual": 1.1575604929371868,
+   "days": 2435,
+   "skew": 8.775108717941878,
+   "kurt": 139.91650830204279
+  },
+  "checks": {
+   "n_trades": {
+    "label": "筆數",
+    "value": 6441,
+    "threshold": ">= 300",
+    "status": "pass"
+   },
+   "mean_in_sample": {
+    "label": "樣本內平均 R > 0",
+    "value": 0.1536757816426606,
+    "threshold": "> 0",
+    "status": "pass"
+   },
+   "mean_oos": {
+    "label": "樣本外平均 R > 0",
+    "value": 0.07042471494128293,
+    "threshold": "> 0 且筆數 >= 100",
+    "status": "pass"
+   },
+   "cluster_t": {
+    "label": "嚴格群集 t（四種分群取最小）",
+    "value": 2.369505072367509,
+    "threshold": 4.031846441724585,
+    "status": "fail"
+   },
+   "deflated_sharpe": {
+    "label": "Deflated Sharpe",
+    "value": 0.28881363206050686,
+    "threshold": ">= 0.95",
+    "status": "fail"
+   },
+   "beats_random": {
+    "label": "贏過隨機進場",
+    "value": 3.813210839688904,
+    "threshold": "> 2",
+    "status": "pass"
+   },
+   "plateau": {
+    "label": "參數高原",
+    "value": null,
+    "threshold": "所有鄰近 > 0 且 >= 主設定的 50%",
+    "status": "skipped"
+   },
+   "baseline_corr": {
+    "label": "與實盤基準的相關性",
+    "value": null,
+    "threshold": "< 0.5",
+    "status": "skipped"
+   },
+   "robust_drop_coins": {
+    "label": "拿掉前 5 大幣後 > 0",
+    "value": 0.10190039261836858,
+    "threshold": "> 0",
+    "status": "pass"
+   },
+   "robust_drop_year": {
+    "label": "拿掉最好的一年後 > 0",
+    "value": 0.08514160216706276,
+    "threshold": "> 0",
+    "status": "pass"
+   },
+   "robust_drop_days": {
+    "label": "拿掉最好的 5 個出場日後 > 0",
+    "value": 0.06152490455646715,
+    "threshold": "> 0",
+    "status": "pass"
+   },
+   "sides": {
+    "label": "多空拆分（參考）",
+    "value": {
+     "long": 0.031505653136647736,
+     "short": 0.2038927171738757
+    },
+    "threshold": null,
+    "status": "info"
+   }
+  }
+ },
+ "12H": {
+  "verdict": "FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe（另有未執行的檢查，結論也不完整 incomplete）",
+  "info": {
+   "trades": 1859,
+   "mean_r": 0.13384947993816748,
+   "rcol": "r_net",
+   "first_entry": "2020-04-17 12:00:00+00:00",
+   "last_exit": "2026-10-31 00:00:00+00:00",
+   "symbols": 333,
+   "sharpe_annual": 0.9104179426164826,
+   "days": 2389,
+   "skew": 11.970548208460404,
+   "kurt": 234.19954464992642
+  },
+  "checks": {
+   "n_trades": {
+    "label": "筆數",
+    "value": 1859,
+    "threshold": ">= 300",
+    "status": "pass"
+   },
+   "mean_in_sample": {
+    "label": "樣本內平均 R > 0",
+    "value": 0.22573682120210162,
+    "threshold": "> 0",
+    "status": "pass"
+   },
+   "mean_oos": {
+    "label": "樣本外平均 R > 0",
+    "value": 0.011409885932774637,
+    "threshold": "> 0 且筆數 >= 100",
+    "status": "pass"
+   },
+   "cluster_t": {
+    "label": "嚴格群集 t（四種分群取最小）",
+    "value": 1.8464770547946225,
+    "threshold": 4.031846441724585,
+    "status": "fail"
+   },
+   "deflated_sharpe": {
+    "label": "Deflated Sharpe",
+    "value": 0.0729036739224374,
+    "threshold": ">= 0.95",
+    "status": "fail"
+   },
+   "beats_random": {
+    "label": "贏過隨機進場",
+    "value": 3.524514578098821,
+    "threshold": "> 2",
+    "status": "pass"
+   },
+   "plateau": {
+    "label": "參數高原",
+    "value": null,
+    "threshold": "所有鄰近 > 0 且 >= 主設定的 50%",
+    "status": "skipped"
+   },
+   "baseline_corr": {
+    "label": "與實盤基準的相關性",
+    "value": 0.18198328055211138,
+    "threshold": "< 0.5",
+    "status": "pass"
+   },
+   "robust_drop_coins": {
+    "label": "拿掉前 5 大幣後 > 0",
+    "value": 0.09732455900944784,
+    "threshold": "> 0",
+    "status": "pass"
+   },
+   "robust_drop_year": {
+    "label": "拿掉最好的一年後 > 0",
+    "value": 0.09183948151831287,
+    "threshold": "> 0",
+    "status": "pass"
+   },
+   "robust_drop_days": {
+    "label": "拿掉最好的 5 個出場日後 > 0",
+    "value": 0.04204648071910262,
+    "threshold": "> 0",
+    "status": "pass"
+   },
+   "sides": {
+    "label": "多空拆分（參考）",
+    "value": {
+     "long": 0.01912049944739257,
+     "short": 0.2593020025243639
+    },
+    "threshold": null,
+    "status": "info"
+   }
+  }
+ },
+ "1D": {
+  "verdict": "FAIL 未通過：樣本外平均 R > 0、嚴格群集 t（四種分群取最小）、Deflated Sharpe、拿掉最好的 5 個出場日後 > 0（另有未執行的檢查，結論也不完整 incomplete）",
+  "info": {
+   "trades": 760,
+   "mean_r": 0.0807005256097346,
+   "rcol": "r_net",
+   "first_entry": "2020-05-11 00:00:00+00:00",
+   "last_exit": "2026-10-28 00:00:00+00:00",
+   "symbols": 219,
+   "sharpe_annual": 0.42682464033523937,
+   "days": 2362,
+   "skew": 10.394945177174476,
+   "kurt": 231.94599469242505
+  },
+  "checks": {
+   "n_trades": {
+    "label": "筆數",
+    "value": 760,
+    "threshold": ">= 300",
+    "status": "pass"
+   },
+   "mean_in_sample": {
+    "label": "樣本內平均 R > 0",
+    "value": 0.2451672799357992,
+    "threshold": "> 0",
+    "status": "pass"
+   },
+   "mean_oos": {
+    "label": "樣本外平均 R > 0",
+    "value": -0.15164139716835665,
+    "threshold": "> 0 且筆數 >= 100",
+    "status": "fail"
+   },
+   "cluster_t": {
+    "label": "嚴格群集 t（四種分群取最小）",
+    "value": 0.8361901208728794,
+    "threshold": 4.031846441724585,
+    "status": "fail"
+   },
+   "deflated_sharpe": {
+    "label": "Deflated Sharpe",
+    "value": 0.004468034502308427,
+    "threshold": ">= 0.95",
+    "status": "fail"
+   },
+   "beats_random": {
+    "label": "贏過隨機進場",
+    "value": 2.6446446912180948,
+    "threshold": "> 2",
+    "status": "pass"
+   },
+   "plateau": {
+    "label": "參數高原",
+    "value": null,
+    "threshold": "所有鄰近 > 0 且 >= 主設定的 50%",
+    "status": "skipped"
+   },
+   "baseline_corr": {
+    "label": "與實盤基準的相關性",
+    "value": 0.07357132488933858,
+    "threshold": "< 0.5",
+    "status": "pass"
+   },
+   "robust_drop_coins": {
+    "label": "拿掉前 5 大幣後 > 0",
+    "value": 0.022601529476176597,
+    "threshold": "> 0",
+    "status": "pass"
+   },
+   "robust_drop_year": {
+    "label": "拿掉最好的一年後 > 0",
+    "value": 0.006198603216075731,
+    "threshold": "> 0",
+    "status": "pass"
+   },
+   "robust_drop_days": {
+    "label": "拿掉最好的 5 個出場日後 > 0",
+    "value": -0.01862810254275581,
+    "threshold": "> 0",
+    "status": "fail"
+   },
+   "sides": {
+    "label": "多空拆分（參考）",
+    "value": {
+     "long": 0.09764683858472382,
+     "short": 0.06031583029199398
+    },
+    "threshold": null,
+    "status": "info"
+   }
+  }
+ },
+ "2D": {
+  "verdict": "FAIL 未通過：筆數、樣本外平均 R > 0、嚴格群集 t（四種分群取最小）、Deflated Sharpe、贏過隨機進場、拿掉前 5 大幣後 > 0、拿掉最好的一年後 > 0、拿掉最好的 5 個出場日後 > 0（另有未執行的檢查，結論也不完整 incomplete）",
+  "info": {
+   "trades": 286,
+   "mean_r": -0.003848578783348896,
+   "rcol": "r_net",
+   "first_entry": "2020-04-10 00:00:00+00:00",
+   "last_exit": "2026-10-30 00:00:00+00:00",
+   "symbols": 133,
+   "sharpe_annual": -0.015578368790193335,
+   "days": 2395,
+   "skew": 5.2900259845042035,
+   "kurt": 152.6802076276253
+  },
+  "checks": {
+   "n_trades": {
+    "label": "筆數",
+    "value": 286,
+    "threshold": ">= 300",
+    "status": "fail"
+   },
+   "mean_in_sample": {
+    "label": "樣本內平均 R > 0",
+    "value": 0.15655628676967376,
+    "threshold": "> 0",
+    "status": "pass"
+   },
+   "mean_oos": {
+    "label": "樣本外平均 R > 0",
+    "value": -0.1832643913648779,
+    "threshold": "> 0 且筆數 >= 100",
+    "status": "fail"
+   },
+   "cluster_t": {
+    "label": "嚴格群集 t（四種分群取最小）",
+    "value": -0.04482629281418231,
+    "threshold": 4.031846441724585,
+    "status": "fail"
+   },
+   "deflated_sharpe": {
+    "label": "Deflated Sharpe",
+    "value": 0.0002787880540705001,
+    "threshold": ">= 0.95",
+    "status": "fail"
+   },
+   "beats_random": {
+    "label": "贏過隨機進場",
+    "value": 1.5660338648537686,
+    "threshold": "> 2",
+    "status": "fail"
+   },
+   "plateau": {
+    "label": "參數高原",
+    "value": null,
+    "threshold": "所有鄰近 > 0 且 >= 主設定的 50%",
+    "status": "skipped"
+   },
+   "baseline_corr": {
+    "label": "與實盤基準的相關性",
+    "value": 0.030163091564812138,
+    "threshold": "< 0.5",
+    "status": "pass"
+   },
+   "robust_drop_coins": {
+    "label": "拿掉前 5 大幣後 > 0",
+    "value": -0.10177100473201042,
+    "threshold": "> 0",
+    "status": "fail"
+   },
+   "robust_drop_year": {
+    "label": "拿掉最好的一年後 > 0",
+    "value": -0.11330527805822006,
+    "threshold": "> 0",
+    "status": "fail"
+   },
+   "robust_drop_days": {
+    "label": "拿掉最好的 5 個出場日後 > 0",
+    "value": -0.14383806823482823,
+    "threshold": "> 0",
+    "status": "fail"
+   },
+   "sides": {
+    "label": "多空拆分（參考）",
+    "value": {
+     "long": 0.10658522170409783,
+     "short": -0.1421082187636956
+    },
+    "threshold": null,
+    "status": "info"
+   }
+  }
+ },
+ "3D": {
+  "verdict": "FAIL 未通過：筆數、樣本內平均 R > 0、樣本外平均 R > 0、嚴格群集 t（四種分群取最小）、Deflated Sharpe、贏過隨機進場、拿掉前 5 大幣後 > 0、拿掉最好的一年後 > 0、拿掉最好的 5 個出場日後 > 0（另有未執行的檢查，結論也不完整 incomplete）",
+  "info": {
+   "trades": 124,
+   "mean_r": -0.20567271751595792,
+   "rcol": "r_net",
+   "first_entry": "2020-06-19 00:00:00+00:00",
+   "last_exit": "2026-09-01 00:00:00+00:00",
+   "symbols": 80,
+   "sharpe_annual": -0.7426838875683073,
+   "days": 2266,
+   "skew": 3.3743091778094403,
+   "kurt": 133.67045353064367
+  },
+  "checks": {
+   "n_trades": {
+    "label": "筆數",
+    "value": 124,
+    "threshold": ">= 300",
+    "status": "fail"
+   },
+   "mean_in_sample": {
+    "label": "樣本內平均 R > 0",
+    "value": -0.061868816438636745,
+    "threshold": "> 0",
+    "status": "fail"
+   },
+   "mean_oos": {
+    "label": "樣本外平均 R > 0",
+    "value": -0.3404888747759467,
+    "threshold": "> 0 且筆數 >= 100",
+    "status": "fail"
+   },
+   "cluster_t": {
+    "label": "嚴格群集 t（四種分群取最小）",
+    "value": -1.9279194901032972,
+    "threshold": 4.031846441724585,
+    "status": "fail"
+   },
+   "deflated_sharpe": {
+    "label": "Deflated Sharpe",
+    "value": 6.238035943906262e-07,
+    "threshold": ">= 0.95",
+    "status": "fail"
+   },
+   "beats_random": {
+    "label": "贏過隨機進場",
+    "value": 0.511166008030399,
+    "threshold": "> 2",
+    "status": "fail"
+   },
+   "plateau": {
+    "label": "參數高原",
+    "value": null,
+    "threshold": "所有鄰近 > 0 且 >= 主設定的 50%",
+    "status": "skipped"
+   },
+   "baseline_corr": {
+    "label": "與實盤基準的相關性",
+    "value": -0.010197941496437539,
+    "threshold": "< 0.5",
+    "status": "pass"
+   },
+   "robust_drop_coins": {
+    "label": "拿掉前 5 大幣後 > 0",
+    "value": -0.3597132977201707,
+    "threshold": "> 0",
+    "status": "fail"
+   },
+   "robust_drop_year": {
+    "label": "拿掉最好的一年後 > 0",
+    "value": -0.30634967846554606,
+    "threshold": "> 0",
+    "status": "fail"
+   },
+   "robust_drop_days": {
+    "label": "拿掉最好的 5 個出場日後 > 0",
+    "value": -0.3813776277787358,
+    "threshold": "> 0",
+    "status": "fail"
+   },
+   "sides": {
+    "label": "多空拆分（參考）",
+    "value": {
+     "long": 0.06196114911054174,
+     "short": -0.45657946747830147
+    },
+    "threshold": null,
+    "status": "info"
+   }
+  }
+ },
+ "1W": {
+  "verdict": "FAIL 未通過：筆數、樣本內平均 R > 0、樣本外平均 R > 0、嚴格群集 t（四種分群取最小）、Deflated Sharpe、贏過隨機進場、拿掉前 5 大幣後 > 0、拿掉最好的一年後 > 0、拿掉最好的 5 個出場日後 > 0（另有未執行的檢查，結論也不完整 incomplete）",
+  "info": {
+   "trades": 28,
+   "mean_r": 0.025110303339522806,
+   "rcol": "r_net",
+   "first_entry": "2022-05-02 00:00:00+00:00",
+   "last_exit": "2026-09-28 00:00:00+00:00",
+   "symbols": 23,
+   "sharpe_annual": 0.05976773409001573,
+   "days": 1611,
+   "skew": 12.891810686362374,
+   "kurt": 357.4080655727997
+  },
+  "checks": {
+   "n_trades": {
+    "label": "筆數",
+    "value": 28,
+    "threshold": ">= 300",
+    "status": "fail"
+   },
+   "mean_in_sample": {
+    "label": "樣本內平均 R > 0",
+    "value": -0.32943108174879315,
+    "threshold": "> 0",
+    "status": "fail"
+   },
+   "mean_oos": {
+    "label": "樣本外平均 R > 0",
+    "value": 0.08420053418757545,
+    "threshold": "> 0 且筆數 >= 100",
+    "status": "fail"
+   },
+   "cluster_t": {
+    "label": "嚴格群集 t（四種分群取最小）",
+    "value": 0.09228588308127673,
+    "threshold": 4.031846441724585,
+    "status": "fail"
+   },
+   "deflated_sharpe": {
+    "label": "Deflated Sharpe",
+    "value": 0.0003895395675381774,
+    "threshold": ">= 0.95",
+    "status": "fail"
+   },
+   "beats_random": {
+    "label": "贏過隨機進場",
+    "value": 1.2796064583479305,
+    "threshold": "> 2",
+    "status": "fail"
+   },
+   "plateau": {
+    "label": "參數高原",
+    "value": null,
+    "threshold": "所有鄰近 > 0 且 >= 主設定的 50%",
+    "status": "skipped"
+   },
+   "baseline_corr": {
+    "label": "與實盤基準的相關性",
+    "value": -0.013256933419693738,
+    "threshold": "< 0.5",
+    "status": "pass"
+   },
+   "robust_drop_coins": {
+    "label": "拿掉前 5 大幣後 > 0",
+    "value": -0.4762217799958933,
+    "threshold": "> 0",
+    "status": "fail"
+   },
+   "robust_drop_year": {
+    "label": "拿掉最好的一年後 > 0",
+    "value": -0.17117612894603826,
+    "threshold": "> 0",
+    "status": "fail"
+   },
+   "robust_drop_days": {
+    "label": "拿掉最好的 5 個出場日後 > 0",
+    "value": -0.47739212623810173,
+    "threshold": "> 0",
+    "status": "fail"
+   },
+   "sides": {
+    "label": "多空拆分（參考）",
+    "value": {
+     "long": 0.15928416882679494,
+     "short": -0.258145634911385
+    },
+    "threshold": null,
+    "status": "info"
+   }
+  }
+ }
+}
