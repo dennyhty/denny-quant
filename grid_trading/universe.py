@@ -1,11 +1,15 @@
-"""CoinMarketCap 市值前 100 名（扣掉穩定幣）中，派網有 USDT 永續合約的幣種。
+"""要交易的幣：CoinMarketCap 市值前 100 名（扣掉穩定幣），每月自動更新（2026-11-21 起）。
 
-TOP100 是 2026-10-12 從 CoinMarketCap 抓下來的快照，依市值排序。前 100 名裡派網沒有合約的
-（LEO、XAUt、M、BGB、MORPHO、GT、JST、KCS、XDC、FLR、NEXO）不遞補，所以只有 88 個。
-要更新名單：python -c "from grid_trading.universe import fetch_cmc_top; print(fetch_cmc_top())"
+- monthly_top()：每個月（UTC）第一次用到時從 CoinMarketCap 抓一次當下的前 100 名，整個月沿用；
+  抓不到就沿用上個月的名單，下次再試；連上個月的都沒有才用下面的 TOP100 備用名單。
+  回測（research/universe_buckets.py）用的是同一個規則：當月用上個月底的市值前 100 名，幣安沒有合約的不遞補。
+- binance_perp_for()：CMC 代號對應到幣安 USDT 永續合約（1000PEPE、1000BONK 這類加前綴的也找得到）。
+- TOP100 是 2026-10-12 的舊快照（當時只留派網也有合約的 88 個），現在只當備用名單和舊研究用。
 """
 
 from __future__ import annotations
+
+from datetime import datetime, timezone
 
 import requests
 
@@ -48,3 +52,32 @@ def fetch_cmc_top(n: int = 100) -> list[str]:
 
 def perp_symbols(coins: list[str] = TOP100) -> list[str]:
     return [f"{c}_USDT_PERP" for c in coins]
+
+
+def binance_perp_for(coin: str, listed: set[str]) -> str | None:
+    """CMC 代號 → 幣安 USDT 永續合約代號（listed 裡有的）；沒有就回傳 None。"""
+    from .binance_history import binance_symbols  # 避免循環匯入
+
+    cands = list(reversed(binance_symbols(coin))) + [f"{p}{coin}USDT" for p in ("", "1000", "1000000", "1M")]
+    return next((s for s in cands if s in listed), None)
+
+
+def monthly_top(cached: dict | None, n: int = 100, now: datetime | None = None, fetch=None) -> dict:
+    """這個月的市值前 n 名。cached 是上一次回傳的 dict（呼叫端自己存），同一個月直接沿用。
+
+    回傳 {"month": "YYYY-MM", "coins": [...], "fetched_at": ISO 時間, "status": ...}；status：
+    cached（沿用本月）、fresh（剛抓）、stale（抓不到，沿用舊月份，下次再試）、fallback（用 TOP100 備用名單）。
+    stale / fallback 會多一個 error 欄位。"""
+    now = now or datetime.now(timezone.utc)
+    month = now.strftime("%Y-%m")
+    if cached and cached.get("month") == month and cached.get("coins"):
+        return {**cached, "status": "cached"}
+    try:
+        coins = (fetch or fetch_cmc_top)(n)
+        if len(coins) < n * 0.8:
+            raise ValueError(f"只抓到 {len(coins)} 個")
+        return {"month": month, "coins": list(coins), "fetched_at": now.isoformat(timespec="seconds"), "status": "fresh"}
+    except Exception as e:  # noqa: BLE001
+        if cached and cached.get("coins"):
+            return {**cached, "status": "stale", "error": str(e)}
+        return {"month": None, "coins": list(TOP100), "fetched_at": None, "status": "fallback", "error": str(e)}

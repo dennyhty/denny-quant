@@ -1,0 +1,13 @@
+bucket,verdict,n_trades,mean_in_sample,mean_oos,cluster_t,deflated_sharpe,beats_random,plateau,baseline_corr,robust_drop_coins,robust_drop_year,robust_drop_days,sides
+現行實盤：固定名單 ∩ 成交額≥5000萬,FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe（另有未執行的檢查，結論也不完整 incomplete）,pass,pass,pass,fail,fail,skipped,skipped,skipped,pass,pass,pass,info
+新基準：幣安當月市值前100 ∩ ≥5000萬,FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe（另有未執行的檢查，結論也不完整 incomplete）,pass,pass,pass,fail,fail,skipped,skipped,skipped,pass,pass,pass,info
+市值前100（不設成交額門檻）,FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe（另有未執行的檢查，結論也不完整 incomplete）,pass,pass,pass,fail,fail,skipped,skipped,skipped,pass,pass,pass,info
+市值 101-200,FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe、拿掉最好的 5 個出場日後 > 0（另有未執行的檢查，結論也不完整 incomplete）,pass,pass,pass,fail,fail,skipped,skipped,skipped,pass,pass,fail,info
+市值 201-300,FAIL 未通過：樣本內平均 R > 0、嚴格群集 t（四種分群取最小）、Deflated Sharpe、拿掉最好的 5 個出場日後 > 0（另有未執行的檢查，結論也不完整 incomplete）,pass,fail,pass,fail,fail,skipped,skipped,skipped,pass,pass,fail,info
+市值 101-200 ∩ ≥5000萬,FAIL 未通過：樣本外平均 R > 0、嚴格群集 t（四種分群取最小）、Deflated Sharpe、拿掉前 5 大幣後 > 0、拿掉最好的一年後 > 0、拿掉最好的 5 個出場日後 > 0（另有未執行的檢查，結論也不完整 incomplete）,pass,pass,fail,fail,fail,skipped,skipped,skipped,fail,fail,fail,info
+市值 201-300 ∩ ≥5000萬,FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe（另有未執行的檢查，結論也不完整 incomplete）,pass,pass,pass,fail,fail,skipped,skipped,skipped,pass,pass,pass,info
+成交額 ≥5000萬（不看市值）,FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe（另有未執行的檢查，結論也不完整 incomplete）,pass,pass,pass,fail,fail,skipped,skipped,skipped,pass,pass,pass,info
+成交額 1000萬-5000萬,FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe（另有未執行的檢查，結論也不完整 incomplete）,pass,pass,pass,fail,fail,skipped,skipped,skipped,pass,pass,pass,info
+成交額 500萬-1000萬,FAIL 未通過：樣本內平均 R > 0、樣本外平均 R > 0、嚴格群集 t（四種分群取最小）、Deflated Sharpe、拿掉前 5 大幣後 > 0、拿掉最好的一年後 > 0、拿掉最好的 5 個出場日後 > 0（另有未執行的檢查，結論也不完整 incomplete）,pass,fail,fail,fail,fail,skipped,skipped,skipped,fail,fail,fail,info
+市值前100 ∩ 1000萬-5000萬,FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe（另有未執行的檢查，結論也不完整 incomplete）,pass,pass,pass,fail,fail,skipped,skipped,skipped,pass,pass,pass,info
+市值前300 ∩ ≥5000萬,FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe（另有未執行的檢查，結論也不完整 incomplete）,pass,pass,pass,fail,fail,skipped,skipped,skipped,pass,pass,pass,info

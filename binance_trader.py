@@ -8,7 +8,7 @@
 --max-open 15（同時最多幾張）、--dd-half-r 20（回撤 20R 後風險減半）、--state-dir（狀態檔位置）、
 --no-stream（不開即時推送）、--poll-stream 300（推送正常時的輪詢間隔）、
 --min-adv 5e7（近 30 天日均成交額低於 5,000 萬 U 的幣不做，0 = 不設）、
---entry-wait 600（限價進場最多等幾秒）、--taker（進場和止盈改回市價）。
+--fixed-coins（用固定的舊名單，不每月更新市值前 100 名）、--entry-wait 600（限價進場最多等幾秒）、--taker（進場和止盈改回市價）。
 預設（2026-11-17 起）：進場掛限價單在訊號收盤價、逾時沒成交的部分改市價；止盈掛限價單；止損仍是市價條件單。
 --max-equity 300（資金上限：算倉位的權益最多當 300 U；也可設環境變數 TRADER_MAX_EQUITY，命令列優先）。
 --check：上線前唯讀檢查（只限 testnet / live）：對時、權益、雙向持倉、持倉和掛單、API 金鑰權限；不下單、不改任何帳戶設定、不推 Telegram。
@@ -113,6 +113,8 @@ def main(argv: list[str]) -> int:
                     help="收盤後幾秒再掃描（預設：測試網、正式 15 秒，紙上 75 秒，和測試網錯開）")
     ap.add_argument("--min-adv", type=float, default=5e7,
                     help="近 30 天日均成交額（USDT）低於這個數字的幣不做（預設 5,000 萬；0 = 不設門檻）")
+    ap.add_argument("--fixed-coins", action="store_true",
+                    help="用 grid_trading/universe.py 的固定名單，不每月從 CoinMarketCap 更新市值前 100 名")
     ap.add_argument("--entry-wait", type=float, default=600.0,
                     help="限價進場最多等幾秒，沒成交完的部分改市價（預設 600）")
     ap.add_argument("--taker", action="store_true", help="進場和止盈都用市價（舊做法），不掛限價單")
@@ -148,7 +150,7 @@ def main(argv: list[str]) -> int:
         return preflight(venue, a.mode, a.risk, max_equity)
     cfg = Config(mode=a.mode, risk=a.risk, max_risk=a.max_risk, leverage=a.leverage, paper_equity=a.paper_equity,
                  rules=RiskRules(max_open=a.max_open, dd_half_r=a.dd_half_r), state_dir=a.state_dir,
-                 poll=a.poll, poll_stream=a.poll_stream, min_adv=a.min_adv, entry_wait=a.entry_wait,
+                 poll=a.poll, poll_stream=a.poll_stream, min_adv=a.min_adv, entry_wait=a.entry_wait, auto_coins=not a.fixed_coins,
                  max_equity=max_equity, maker_entry=not a.taker, maker_tp=not a.taker, scan_delay=(75.0 if a.mode == "paper" else 15.0) if a.scan_delay is None else a.scan_delay)
     data = BinanceFutures(MAINNET)
     stream = None

@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlparse
 
 from grid_trading import signals
 from grid_trading.binance_public import universe
+from grid_trading.universe import monthly_top
 from grid_trading.signals.engine import INTERVAL_MS, Engine
 
 WEB = Path(__file__).parent / "web"
@@ -85,7 +86,7 @@ def main() -> int:
     p.add_argument("--every", type=float, default=120, help="每幾秒重新掃描一次")
     args = p.parse_args()
 
-    symbols = args.symbols or universe()
+    symbols = args.symbols or universe(coins=monthly_top(None)["coins"])
     engine = Engine([signals.get(n) for n in args.strategies], symbols, args.intervals, args.keep_days)
     print(f"監看 {len(symbols)} 個幣、週期 {args.intervals}，第一次掃描中…", file=sys.stderr)
     engine.scan_once()

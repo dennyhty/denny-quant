@@ -15,7 +15,7 @@ import pandas as pd
 import requests
 
 from .binance_history import binance_symbols
-from .universe import TOP100
+from .universe import TOP100, binance_perp_for
 
 BASE_URL = "https://www.binance.com"
 INTERVALS = {"15M": "15m", "30M": "30m", "60M": "1h", "2H": "2h", "4H": "4h", "8H": "8h", "12H": "12h", "1D": "1d"}
@@ -66,14 +66,16 @@ class BinancePublic:
                 if s.get("contractType") == "PERPETUAL" and s.get("quoteAsset") == "USDT" and s.get("status") == "TRADING"}
 
 
-def universe(api: BinancePublic | None = None) -> list[str]:
-    """要掃描的幣：市值前 100 名（grid_trading/universe.py）裡幣安有 USDT 永續合約的，網站代號。"""
+def universe(api: BinancePublic | None = None, coins: list[str] | None = None) -> list[str]:
+    """要掃描的幣：coins（預設 TOP100 備用名單；網站傳每月更新的市值前 100 名）裡幣安有 USDT 永續合約的，網站代號。"""
+    coins = list(TOP100) if coins is None else coins
     try:
         listed = (api or BinancePublic()).usdt_perps()
-        syms = [b for b in (binance_symbols(c)[-1] for c in TOP100) if b in listed]
+        syms = {b for b in (binance_perp_for(c, listed) for c in coins) if b}
     except Exception as e:  # 抓不到合約清單：用備用名單，K 線抓不到的幣掃描時會自己跳過
         print(f"注意：幣安合約清單抓不到（{e}），用備用名單", flush=True)
-        syms = [binance_symbols(c)[-1] for c in TOP100 if c not in NOT_LISTED]
+        # 不知道新幣在幣安的合約名稱（有沒有 1000 前綴），只留舊名單裡確定對得上的
+        syms = {binance_symbols(c)[-1] for c in coins if c in TOP100 and c not in NOT_LISTED}
     return sorted(from_binance(b) for b in syms)
 
 

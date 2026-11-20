@@ -24,6 +24,7 @@ from pathlib import Path
 from grid_trading import signals
 from grid_trading.binance_history import binance_symbols
 from grid_trading.binance_public import from_binance, universe
+from grid_trading.universe import monthly_top
 from grid_trading.signals import ledger as ledger_mod
 from grid_trading.signals.engine import Engine
 from signal_server import _sanitize
@@ -81,7 +82,12 @@ def main() -> int:
     if args.previous and Path(args.previous).exists():
         (data / "notifications.json").write_text(json.dumps(json.loads(Path(args.previous).read_text()), ensure_ascii=False))
 
-    symbols = universe()
+    # 市值前 100 名每月更新一次（2026-11-21 起），這個月的名單存在 state.json 的 universe，下一輪沿用
+    top = monthly_top(prev_state.get("universe"))
+    if top["status"] in ("stale", "fallback"):
+        print(f"注意：市值前 100 名抓不到（{top.get('error')}），{top['status']}：用 {top['month'] or '備用'} 的名單",
+              file=sys.stderr)
+    symbols = universe(coins=top["coins"])
     engine = Engine([signals.get(n) for n in args.strategies], symbols, args.intervals, args.keep_days, state_dir=data)
     engine.previous = {s["id"]: s for s in prev_state.get("signals", []) if "id" in s}
     engine.blocked = dict(prev_state.get("blocked") or {})
@@ -93,9 +99,12 @@ def main() -> int:
         new = from_binance(binance_symbols(sym.split("_")[0])[-1])
         if new != sym and new in symbols:
             engine.scanned.setdefault(f"{new}|{iv}", t)
-    if not engine.scanned and prev_state.get("updated"):
-        # 上一次的 state.json 還沒有 scanned：當成上一次每個幣、週期都掃到它更新的時間
-        engine.scanned = {f"{s}|{iv}": prev_state["updated"] for s in symbols for iv in args.intervals}
+    if prev_state.get("updated"):
+        # 沒有掃描紀錄的（幣, 週期）：上一次的 state.json 還沒有 scanned，或是這個月新進名單的幣。
+        # 當成上一次更新時已經掃過，舊 K 線上的訊號才不會被當成新訊號
+        for s in symbols:
+            for iv in args.intervals:
+                engine.scanned.setdefault(f"{s}|{iv}", prev_state["updated"])
     engine.scan_once()
     if engine.failed:
         sample = sorted(set(engine.errors.values()))[:3]
@@ -107,6 +116,7 @@ def main() -> int:
     state = engine.state()
     state["static"] = True
     state["source"] = "binance"
+    state["universe"] = {k: top[k] for k in ("month", "coins", "fetched_at")}
 
     book = ledger_mod.update(previous, state["signals"], lambda sym, iv: engine.klines(sym, iv, 1000),
                              engine.fee)
