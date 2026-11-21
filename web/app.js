@@ -240,6 +240,14 @@ function statusText(s) {
   return { cls: "closed", text: `已結束 · ${KIND_TEXT[last.kind] || last.kind}` };
 }
 
+/** 交易程式的流動性門檻（近 30 天日均成交額 5,000 萬 U）：低於門檻的訊號實盤不開倉。 */
+const LIVE_MIN_ADV = 5e7;
+function advChip(s) {
+  const adv = (s.info || {}).adv_usdt;
+  if (adv == null || adv >= LIVE_MIN_ADV) return "";
+  return `<span class="chip warn-chip" title="近 30 天日均成交額 ${Math.round(adv / 1e4).toLocaleString()} 萬 U，低於 5,000 萬，實盤不做">成交額不足・實盤不做</span>`;
+}
+
 function cardHtml(s) {
   const price = s.live;
   const pnl = positionPnl(s, price);
@@ -249,7 +257,7 @@ function cardHtml(s) {
   return `<div class="panel card" data-id="${esc(s.id)}">
     <div class="row1"><span class="side ${s.side}">${s.side === "LONG" ? "做多" : "做空"}</span>
       <span class="pair">${coinHtml(s)}</span>
-      <span class="chip">${s.label}</span>
+      <span class="chip">${s.label}</span>${advChip(s)}
       <span class="status ${st.cls}">${st.text}</span></div>
     <div class="meta">${esc(title)} · ${ago(s.time)} · 訊號價 ${fp(s.price)}</div>
     <div class="pnl"><div class="big num ${pnl >= 0 ? "up" : "down"}">${pct(pnl)}<small>${s.track.status === "OPEN" ? "未實現盈虧" : "已實現盈虧"}（1x）</small></div>
@@ -299,7 +307,7 @@ function renderDetailHead() {
   const i = s.info || {};
   const a = btFor(s.interval);
   $("detail-head").innerHTML = `<div class="dh">
-    <div class="row1"><span class="pair">${pair(s.symbol)}</span><span class="chip">${s.label}</span>
+    <div class="row1"><span class="pair">${pair(s.symbol)}</span><span class="chip">${s.label}</span>${advChip(s)}
       <span class="dir ${s.side === "LONG" ? "up" : "down"}">${s.side}</span></div>
     <div class="muted">訊號時間 ${fmtTime(s.time)}（${s.label} K 線收盤確認）· UTC+8</div>
     <div class="prices"><div><span class="muted">訊號價格</span><b class="num">${fp(s.price)}</b></div>
@@ -312,6 +320,7 @@ function renderDetailHead() {
       <span>MACD DIF / DEA</span><span>${fp(i.macd, s.price)} / ${fp(i.macd_signal, s.price)}</span>
       <span>MACD 柱</span><span>${fp(i.hist, s.price)}</span>
       <span>ATR</span><span>${fp(i.atr, s.price)}</span>
+      ${i.adv_usdt != null ? `<span>近 30 天日均成交額</span><span>${Math.round(i.adv_usdt / 1e4).toLocaleString()} 萬 U${i.adv_usdt < LIVE_MIN_ADV ? "（低於 5,000 萬，實盤不做）" : ""}</span>` : ""}
       ${i.adx != null ? `<span>ADX(14)</span><span>${i.adx}</span>` : ""}
       <span>EMA144 / 169</span><span>${fp(i.ema144)} / ${fp(i.ema169)}</span>`}
       ${a ? `<span>實盤規則回測</span><span>${s.label}：勝率 ${(a.win_rate * 100).toFixed(1)}%、每筆 ${fmtR(a.avg_r)}（${a.trades} 筆）</span>` : ""}
