@@ -7,7 +7,7 @@
 選項：--risk 0.0025（每筆風險）、--max-risk 0.01（最小下單量造成的風險上限）、--leverage 5（逐倉）、
 --max-open 15（同時最多幾張）、--dd-half-r 20（回撤 20R 後風險減半）、--state-dir（狀態檔位置）、
 --no-stream（不開即時推送）、--poll-stream 300（推送正常時的輪詢間隔）、
---min-adv 5e7（近 30 天日均成交額低於 5,000 萬 U 的幣不做，0 = 不設）、
+--min-adv 3e7（近 30 天日均成交額低於 3,000 萬 U 的幣不做，0 = 不設）、
 --fixed-coins（用固定的舊名單，不每月更新市值前 100 名）、--entry-wait 600（限價進場最多等幾秒）、--taker（進場和止盈改回市價）。
 預設（2026-11-17 起）：進場掛限價單在訊號收盤價、逾時沒成交的部分改市價；止盈掛限價單；止損仍是市價條件單。
 --max-equity 300（資金上限：算倉位的權益最多當 300 U；也可設環境變數 TRADER_MAX_EQUITY，命令列優先）。
@@ -111,8 +111,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--no-stream", action="store_true", help="不開即時推送（帳戶 websocket），只照 --poll 輪詢")
     ap.add_argument("--scan-delay", type=float, default=None,
                     help="收盤後幾秒再掃描（預設：測試網、正式 15 秒，紙上 75 秒，和測試網錯開）")
-    ap.add_argument("--min-adv", type=float, default=5e7,
-                    help="近 30 天日均成交額（USDT）低於這個數字的幣不做（預設 5,000 萬；0 = 不設門檻）")
+    ap.add_argument("--min-adv", type=float, default=3e7,
+                    help="近 30 天日均成交額（USDT）低於這個數字的幣不做（預設 3,000 萬，2026-11-21 起；0 = 不設門檻）")
     ap.add_argument("--fixed-coins", action="store_true",
                     help="用 grid_trading/universe.py 的固定名單，不每月從 CoinMarketCap 更新市值前 100 名")
     ap.add_argument("--entry-wait", type=float, default=600.0,
