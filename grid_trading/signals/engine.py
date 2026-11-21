@@ -74,7 +74,7 @@ def fetch_klines(api: BinancePublic, symbol: str, interval: str, bars: int = 100
 
 
 # 交易程式（grid_trading/trader）近 30 天日均成交額低於這個數字的幣不開倉；網站照樣顯示，但標成「實盤不做」
-LIVE_MIN_ADV = 5e7
+LIVE_MIN_ADV = 3e7  # 2026-11-21 起 3,000 萬（原 5,000 萬）
 
 
 def turnover_at(closed: pd.DataFrame, t: pd.Timestamp, bar: pd.Timedelta, days: int = 30) -> float | None:
