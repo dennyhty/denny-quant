@@ -70,3 +70,14 @@ def test_trader_refreshes_coins_monthly(tmp_path, monkeypatch):
     assert set(tr.symbols) == {"BBBUSDT", "CCCUSDT"}
     msg = " ".join(str(m) for m in sink)
     assert "新增 CCC/USDT" in msg and "移除 AAA/USDT" in msg
+
+
+def test_turnover_at_uses_bars_before_signal_close():
+    import pandas as pd
+    from grid_trading.signals.engine import turnover_at
+    bar = pd.Timedelta(hours=4)
+    t0 = pd.Timestamp("2026-10-01", tz="UTC")
+    df = pd.DataFrame({"time": [t0 + i * bar for i in range(200)], "close": 2.0, "volume": 10.0})
+    sig_close = df["time"].iloc[179] + bar
+    assert turnover_at(df, sig_close, bar) == 2.0 * 10.0 * 6  # 每天 6 根
+    assert turnover_at(df, t0 + bar, bar) is None  # 不夠 30 天

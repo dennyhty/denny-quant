@@ -72,6 +72,20 @@ def fetch_klines(api: BinancePublic, symbol: str, interval: str, bars: int = 100
     return df
 
 
+
+# 交易程式（grid_trading/trader）近 30 天日均成交額低於這個數字的幣不開倉；網站照樣顯示，但標成「實盤不做」
+LIVE_MIN_ADV = 5e7
+
+
+def turnover_at(closed: pd.DataFrame, t: pd.Timestamp, bar: pd.Timedelta, days: int = 30) -> float | None:
+    """訊號 K 線收盤（t）前 days 天的日均成交額（USDT），和交易程式 daily_turnover 一樣用 成交量 × 收盤價。"""
+    n = int(pd.Timedelta(days=days) / bar)
+    upto = closed[closed["time"] + bar <= t]
+    if len(upto) < n:
+        return None
+    tail = upto.iloc[-n:]
+    return float((tail["volume"] * tail["close"]).sum() / days)
+
 class Engine:
     def __init__(self, strategies: list[Strategy], symbols: list[str], intervals: list[str],
                  keep_days: float = 7, fee: float = 0.0005, state_dir: Path = Path("output"),
@@ -204,6 +218,10 @@ class Engine:
                         continue
                     scanned = {f"{sym}|{interval}|{strat.name}|{int(sig.time.timestamp())}": sig
                                for sig in strat.scan(closed, sym, interval, start=start)}
+                    for sig in scanned.values():  # 交易程式的流動性門檻用的數字，網站拿來標「實盤不做」
+                        adv = turnover_at(closed, sig.time, bar)
+                        if adv is not None:
+                            sig.info = {**(sig.info or {}), "adv_usdt": round(adv)}
                     # 已經發出、還沒結束的單優先：照樣追蹤到結束，期間同一個幣不出新訊號。
                     # 進場規則改了以後（例如 2H 加上 ADX 過濾），重新掃描不會再出現的舊單也照樣追蹤，網站上的持倉不會消失
                     held: list[tuple[pd.Timestamp, pd.Timestamp]] = []
