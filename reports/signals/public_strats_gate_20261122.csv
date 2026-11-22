@@ -1,0 +1,85 @@
+variant,headline,check,label,status,value,threshold,detail
+macd_ema200,macd_ema200|4H|live,n_trades,筆數,pass,15170,>= 300,共 15170 筆
+macd_ema200,macd_ema200|4H|live,mean_in_sample,樣本內平均 R > 0,pass,0.04357701029074843,> 0,樣本內（< 2024-01-01）8154 筆，平均 +0.0436R
+macd_ema200,macd_ema200|4H|live,mean_oos,樣本外平均 R > 0,pass,0.02404860477206545,> 0 且筆數 >= 100,樣本外（>= 2024-01-01）7016 筆，平均 +0.0240R
+macd_ema200,macd_ema200|4H|live,cluster_t,嚴格群集 t（四種分群取最小）,fail,0.9103440252460063,4.042385935392431,進場日+方向 1.12、出場日+方向 1.09、ISO週(進場) 0.91、月(進場) 0.98；試了 1890 組設定，門檻 4.04；未校正門檻 2.0：最小 t 也未達標
+macd_ema200,macd_ema200|4H|live,deflated_sharpe,Deflated Sharpe,fail,0.007232664875465256,>= 0.95,年化夏普 0.43，2370 天，偏態 4.15，峰度 45.9，試驗數 1890
+macd_ema200,macd_ema200|4H|live,beats_random,贏過隨機進場,fail,1.5228230859492367,> 2,策略 - 隨機 = +0.0507R，標準誤 0.0333（7 個共同年份，7 年為正；隨機基準 121041 筆）
+macd_ema200,macd_ema200|4H|live,plateau,參數高原,fail,"[0.012750037199080697, -0.012826729528745862]",所有鄰近 > 0 且 >= 主設定的 50%,主設定 +0.0345R；2 組鄰近：+0.0128、-0.0128
+macd_ema200,macd_ema200|4H|live,baseline_corr,與實盤基準的相關性,fail,0.5814283492784503,< 0.5,出場日加總的日報酬相關係數（2465 天，基準 17793 筆）
+macd_ema200,macd_ema200|4H|live,robust_drop_coins,拿掉前 5 大幣後 > 0,pass,0.023261402779574475,> 0,"拿掉總 R 最高的 5 個幣（ETHUSDT, MATICUSDT, SANDUSDT, WLDUSDT, UNIUSDT）後平均 +0.0233R"
+macd_ema200,macd_ema200|4H|live,robust_drop_year,拿掉最好的一年後 > 0,pass,0.01190867272645841,> 0,拿掉最好的一年（2022，合計 +373.4R）後平均 +0.0119R
+macd_ema200,macd_ema200|4H|live,robust_drop_days,拿掉最好的 5 個出場日後 > 0,fail,-5.746339323298389e-05,> 0,"拿掉最好的 5 個出場日（2022-01-22, 2025-10-11, 2025-02-03, 2024-07-05, 2021-06-23；合計 +524.9R）後平均 -0.0001R"
+macd_ema200,macd_ema200|4H|live,sides,多空拆分（參考）,info,"{""long"": -0.03233214009414381, ""short"": 0.08309970860533686}",,多單 6381 筆 -0.0323R；空單 8789 筆 +0.0831R
+vegas_ma200,vegas_ma200|4H|fix15,n_trades,筆數,pass,5463,>= 300,共 5463 筆
+vegas_ma200,vegas_ma200|4H|fix15,mean_in_sample,樣本內平均 R > 0,pass,0.13324872847390803,> 0,樣本內（< 2024-01-01）2965 筆，平均 +0.1332R
+vegas_ma200,vegas_ma200|4H|fix15,mean_oos,樣本外平均 R > 0,pass,0.024437358883494437,> 0 且筆數 >= 100,樣本外（>= 2024-01-01）2498 筆，平均 +0.0244R
+vegas_ma200,vegas_ma200|4H|fix15,cluster_t,嚴格群集 t（四種分群取最小）,fail,2.2140203764000677,4.042385935392431,進場日+方向 2.79、出場日+方向 2.48、ISO週(進場) 2.45、月(進場) 2.21；試了 1890 組設定，門檻 4.04；未校正門檻 2.0：最小 t 達標
+vegas_ma200,vegas_ma200|4H|fix15,deflated_sharpe,Deflated Sharpe,fail,0.19104748286342188,>= 0.95,年化夏普 1.02，2369 天，偏態 1.82，峰度 17.8，試驗數 1890
+vegas_ma200,vegas_ma200|4H|fix15,beats_random,贏過隨機進場,pass,3.1935457424867217,> 2,策略 - 隨機 = +0.1020R，標準誤 0.0319（7 個共同年份，5 年為正；隨機基準 51842 筆）
+vegas_ma200,vegas_ma200|4H|fix15,plateau,參數高原,pass,"[0.11619810542458694, 0.05173119814699274]",所有鄰近 > 0 且 >= 主設定的 50%,主設定 +0.0835R；2 組鄰近：+0.1162、+0.0517
+vegas_ma200,vegas_ma200|4H|fix15,baseline_corr,與實盤基準的相關性,pass,0.3325275800829303,< 0.5,出場日加總的日報酬相關係數（2465 天，基準 17793 筆）
+vegas_ma200,vegas_ma200|4H|fix15,robust_drop_coins,拿掉前 5 大幣後 > 0,pass,0.06995026077469409,> 0,"拿掉總 R 最高的 5 個幣（FILUSDT, DOGEUSDT, STORJUSDT, SXPUSDT, RUNEUSDT）後平均 +0.0700R"
+vegas_ma200,vegas_ma200|4H|fix15,robust_drop_year,拿掉最好的一年後 > 0,pass,0.05502472154594892,> 0,拿掉最好的一年（2021，合計 +204.8R）後平均 +0.0550R
+vegas_ma200,vegas_ma200|4H|fix15,robust_drop_days,拿掉最好的 5 個出場日後 > 0,pass,0.05785412994053412,> 0,"拿掉最好的 5 個出場日（2022-12-16, 2025-04-06, 2025-01-27, 2023-03-27, 2023-08-15；合計 +146.6R）後平均 +0.0579R"
+vegas_ma200,vegas_ma200|4H|fix15,sides,多空拆分（參考）,info,"{""long"": 0.0703941229163097, ""short"": 0.0973993715669914}",,多單 2813 筆 +0.0704R；空單 2650 筆 +0.0974R
+vegas_ema200,vegas_ema200|2H|fix15,n_trades,筆數,pass,10744,>= 300,共 10744 筆
+vegas_ema200,vegas_ema200|2H|fix15,mean_in_sample,樣本內平均 R > 0,pass,0.10727304325335298,> 0,樣本內（< 2024-01-01）5725 筆，平均 +0.1073R
+vegas_ema200,vegas_ema200|2H|fix15,mean_oos,樣本外平均 R > 0,pass,0.000539142157246027,> 0 且筆數 >= 100,樣本外（>= 2024-01-01）5019 筆，平均 +0.0005R
+vegas_ema200,vegas_ema200|2H|fix15,cluster_t,嚴格群集 t（四種分群取最小）,fail,2.1877191612861075,4.042385935392431,進場日+方向 2.54、出場日+方向 2.23、ISO週(進場) 2.29、月(進場) 2.19；試了 1890 組設定，門檻 4.04；未校正門檻 2.0：最小 t 達標
+vegas_ema200,vegas_ema200|2H|fix15,deflated_sharpe,Deflated Sharpe,fail,0.12684659048798413,>= 0.95,年化夏普 0.91，2415 天，偏態 1.79，峰度 14.8，試驗數 1890
+vegas_ema200,vegas_ema200|2H|fix15,beats_random,贏過隨機進場,pass,4.652611882913017,> 2,策略 - 隨機 = +0.1136R，標準誤 0.0244（7 個共同年份，7 年為正；隨機基準 102646 筆）
+vegas_ema200,vegas_ema200|2H|fix15,plateau,參數高原,pass,"[0.07804453779060253, 0.07891243631881258]",所有鄰近 > 0 且 >= 主設定的 50%,主設定 +0.0574R；2 組鄰近：+0.0780、+0.0789
+vegas_ema200,vegas_ema200|2H|fix15,baseline_corr,與實盤基準的相關性,pass,0.3041563117155108,< 0.5,出場日加總的日報酬相關係數（2465 天，基準 17793 筆）
+vegas_ema200,vegas_ema200|2H|fix15,robust_drop_coins,拿掉前 5 大幣後 > 0,pass,0.045239541227992945,> 0,"拿掉總 R 最高的 5 個幣（CRVUSDT, NEARUSDT, WAVESUSDT, BNBUSDT, FILUSDT）後平均 +0.0452R"
+vegas_ema200,vegas_ema200|2H|fix15,robust_drop_year,拿掉最好的一年後 > 0,pass,0.02922936847959769,> 0,拿掉最好的一年（2021，合計 +354.5R）後平均 +0.0292R
+vegas_ema200,vegas_ema200|2H|fix15,robust_drop_days,拿掉最好的 5 個出場日後 > 0,pass,0.03986867857384846,> 0,"拿掉最好的 5 個出場日（2025-10-30, 2021-06-07, 2023-03-27, 2025-01-27, 2022-06-10；合計 +195.3R）後平均 +0.0399R"
+vegas_ema200,vegas_ema200|2H|fix15,sides,多空拆分（參考）,info,"{""long"": 0.04344094860295349, ""short"": 0.07067014782706582}",,多單 5231 筆 +0.0434R；空單 5513 筆 +0.0707R
+atr_trail,atr_trail|4H|live,n_trades,筆數,pass,46677,>= 300,共 46677 筆
+atr_trail,atr_trail|4H|live,mean_in_sample,樣本內平均 R > 0,pass,0.022598944259114094,> 0,樣本內（< 2024-01-01）24942 筆，平均 +0.0226R
+atr_trail,atr_trail|4H|live,mean_oos,樣本外平均 R > 0,pass,0.02234368617177845,> 0 且筆數 >= 100,樣本外（>= 2024-01-01）21735 筆，平均 +0.0223R
+atr_trail,atr_trail|4H|live,cluster_t,嚴格群集 t（四種分群取最小）,fail,1.143853287642739,4.042385935392431,進場日+方向 1.23、出場日+方向 1.14、ISO週(進場) 1.35、月(進場) 1.42；試了 1890 組設定，門檻 4.04；未校正門檻 2.0：最小 t 也未達標
+atr_trail,atr_trail|4H|live,deflated_sharpe,Deflated Sharpe,fail,0.007516106669035794,>= 0.95,年化夏普 0.45，2379 天，偏態 5.67，峰度 64.4，試驗數 1890
+atr_trail,atr_trail|4H|live,beats_random,贏過隨機進場,pass,3.287209375137291,> 2,策略 - 隨機 = +0.0706R，標準誤 0.0215（7 個共同年份，7 年為正；隨機基準 264627 筆）
+atr_trail,atr_trail|4H|live,plateau,參數高原,fail,"[0.011029319570399463, 0.027796595330642215]",所有鄰近 > 0 且 >= 主設定的 50%,主設定 +0.0225R；2 組鄰近：+0.0110、+0.0278
+atr_trail,atr_trail|4H|live,baseline_corr,與實盤基準的相關性,fail,0.5672269040720582,< 0.5,出場日加總的日報酬相關係數（2465 天，基準 17793 筆）
+atr_trail,atr_trail|4H|live,robust_drop_coins,拿掉前 5 大幣後 > 0,pass,0.016536430593929747,> 0,"拿掉總 R 最高的 5 個幣（AVAXUSDT, ADAUSDT, XRPUSDT, DOTUSDT, NEARUSDT）後平均 +0.0165R"
+atr_trail,atr_trail|4H|live,robust_drop_year,拿掉最好的一年後 > 0,pass,0.011575327021303927,> 0,拿掉最好的一年（2022，合計 +588.3R）後平均 +0.0116R
+atr_trail,atr_trail|4H|live,robust_drop_days,拿掉最好的 5 個出場日後 > 0,fail,-0.0011990452308494103,> 0,"拿掉最好的 5 個出場日（2025-10-11, 2025-02-03, 2021-09-07, 2024-08-05, 2021-12-04；合計 +1104.9R）後平均 -0.0012R"
+atr_trail,atr_trail|4H|live,sides,多空拆分（參考）,info,"{""long"": 0.010123682346326006, ""short"": 0.03456679837340557}",,多單 23081 筆 +0.0101R；空單 23596 筆 +0.0346R
+close_atr_stop,close_atr_stop|4H|live,n_trades,筆數,pass,26723,>= 300,共 26723 筆
+close_atr_stop,close_atr_stop|4H|live,mean_in_sample,樣本內平均 R > 0,fail,-0.001112419574690157,> 0,樣本內（< 2024-01-01）13956 筆，平均 -0.0011R
+close_atr_stop,close_atr_stop|4H|live,mean_oos,樣本外平均 R > 0,pass,0.01672076591147966,> 0 且筆數 >= 100,樣本外（>= 2024-01-01）12767 筆，平均 +0.0167R
+close_atr_stop,close_atr_stop|4H|live,cluster_t,嚴格群集 t（四種分群取最小）,fail,0.2603087974633032,4.042385935392431,進場日+方向 0.28、出場日+方向 0.30、ISO週(進場) 0.26、月(進場) 0.29；試了 1890 組設定，門檻 4.04；未校正門檻 2.0：最小 t 也未達標
+close_atr_stop,close_atr_stop|4H|live,deflated_sharpe,Deflated Sharpe,fail,0.0007338040123274769,>= 0.95,年化夏普 0.12，2376 天，偏態 4.73，峰度 44.6，試驗數 1890
+close_atr_stop,close_atr_stop|4H|live,beats_random,贏過隨機進場,fail,1.9200261794872513,> 2,策略 - 隨機 = +0.0544R，標準誤 0.0283（7 個共同年份，3 年為正；隨機基準 186371 筆）
+close_atr_stop,close_atr_stop|4H|live,plateau,參數高原,fail,"[-0.005031018155481631, -0.023459578002663805]",所有鄰近 > 0 且 >= 主設定的 50%,主設定 +0.0074R；2 組鄰近：-0.0050、-0.0235
+close_atr_stop,close_atr_stop|4H|live,baseline_corr,與實盤基準的相關性,fail,0.5122451060582287,< 0.5,出場日加總的日報酬相關係數（2465 天，基準 17793 筆）
+close_atr_stop,close_atr_stop|4H|live,robust_drop_coins,拿掉前 5 大幣後 > 0,pass,0.0007874822691664254,> 0,"拿掉總 R 最高的 5 個幣（RUNEUSDT, DOTUSDT, ATOMUSDT, ARBUSDT, ZENUSDT）後平均 +0.0008R"
+close_atr_stop,close_atr_stop|4H|live,robust_drop_year,拿掉最好的一年後 > 0,fail,-0.014605053206400159,> 0,拿掉最好的一年（2022，合計 +525.8R）後平均 -0.0146R
+close_atr_stop,close_atr_stop|4H|live,robust_drop_days,拿掉最好的 5 個出場日後 > 0,fail,-0.020316449039360515,> 0,"拿掉最好的 5 個出場日（2025-02-03, 2025-10-11, 2023-08-18, 2024-08-05, 2021-09-07；合計 +736.4R）後平均 -0.0203R"
+close_atr_stop,close_atr_stop|4H|live,sides,多空拆分（參考）,info,"{""long"": -0.0454338464607324, ""short"": 0.056987113122761966}",,多單 12936 筆 -0.0454R；空單 13787 筆 +0.0570R
+chan_osc,chan_osc|2H|fix15,n_trades,筆數,pass,52704,>= 300,共 52704 筆
+chan_osc,chan_osc|2H|fix15,mean_in_sample,樣本內平均 R > 0,fail,-0.029779342506312468,> 0,樣本內（< 2024-01-01）28154 筆，平均 -0.0298R
+chan_osc,chan_osc|2H|fix15,mean_oos,樣本外平均 R > 0,fail,-0.0701670518553717,> 0 且筆數 >= 100,樣本外（>= 2024-01-01）24550 筆，平均 -0.0702R
+chan_osc,chan_osc|2H|fix15,cluster_t,嚴格群集 t（四種分群取最小）,fail,-2.6589000728074006,4.042385935392431,進場日+方向 -2.38、出場日+方向 -2.24、ISO週(進場) -2.35、月(進場) -2.66；試了 1890 組設定，門檻 4.04；未校正門檻 2.0：最小 t 也未達標
+chan_osc,chan_osc|2H|fix15,deflated_sharpe,Deflated Sharpe,fail,3.794921210609203e-09,>= 0.95,年化夏普 -0.90，2438 天，偏態 -0.24，峰度 7.5，試驗數 1890
+chan_osc,chan_osc|2H|fix15,beats_random,贏過隨機進場,fail,1.694171407169985,> 2,策略 - 隨機 = +0.0378R，標準誤 0.0223（7 個共同年份，6 年為正；隨機基準 437456 筆）
+chan_osc,chan_osc|2H|fix15,plateau,參數高原,fail,"[-0.0675161480283203, -0.04051633300494081]",所有鄰近 > 0 且 >= 主設定的 50%,主設定 -0.0486R；2 組鄰近：-0.0675、-0.0405
+chan_osc,chan_osc|2H|fix15,baseline_corr,與實盤基準的相關性,pass,-0.01362852125458189,< 0.5,出場日加總的日報酬相關係數（2465 天，基準 17793 筆）
+chan_osc,chan_osc|2H|fix15,robust_drop_coins,拿掉前 5 大幣後 > 0,fail,-0.053848015865040545,> 0,"拿掉總 R 最高的 5 個幣（LTCUSDT, RENUSDT, 1000SHIBUSDT, XRPUSDT, SRMUSDT）後平均 -0.0538R"
+chan_osc,chan_osc|2H|fix15,robust_drop_year,拿掉最好的一年後 > 0,fail,-0.06857761309908872,> 0,拿掉最好的一年（2021，合計 +490.4R）後平均 -0.0686R
+chan_osc,chan_osc|2H|fix15,robust_drop_days,拿掉最好的 5 個出場日後 > 0,fail,-0.059197300136912524,> 0,"拿掉最好的 5 個出場日（2021-05-24, 2021-07-21, 2022-07-27, 2025-06-23, 2022-11-10；合計 +536.7R）後平均 -0.0592R"
+chan_osc,chan_osc|2H|fix15,sides,多空拆分（參考）,info,"{""long"": -0.06408028705583241, ""short"": -0.031108654102789044}",,多單 27947 筆 -0.0641R；空單 24757 筆 -0.0311R
+vegas_trend_only,vegas_trend_only|2H|fix15,n_trades,筆數,pass,4017,>= 300,共 4017 筆
+vegas_trend_only,vegas_trend_only|2H|fix15,mean_in_sample,樣本內平均 R > 0,pass,0.11892253330701366,> 0,樣本內（< 2024-01-01）2144 筆，平均 +0.1189R
+vegas_trend_only,vegas_trend_only|2H|fix15,mean_oos,樣本外平均 R > 0,pass,0.059787517495906356,> 0 且筆數 >= 100,樣本外（>= 2024-01-01）1873 筆，平均 +0.0598R
+vegas_trend_only,vegas_trend_only|2H|fix15,cluster_t,嚴格群集 t（四種分群取最小）,fail,2.749088100419623,4.042385935392431,進場日+方向 3.00、出場日+方向 2.75、ISO週(進場) 2.87、月(進場) 3.12；試了 1890 組設定，門檻 4.04；未校正門檻 2.0：最小 t 達標
+vegas_trend_only,vegas_trend_only|2H|fix15,deflated_sharpe,Deflated Sharpe,fail,0.23976777386307074,>= 0.95,年化夏普 1.08，2407 天，偏態 2.84，峰度 28.7，試驗數 1890
+vegas_trend_only,vegas_trend_only|2H|fix15,beats_random,贏過隨機進場,pass,4.542353243794043,> 2,策略 - 隨機 = +0.1464R，標準誤 0.0322（7 個共同年份，7 年為正；隨機基準 39448 筆）
+vegas_trend_only,vegas_trend_only|2H|fix15,plateau,參數高原,fail,"[0.1283976760152874, 0.012072169573674702]",所有鄰近 > 0 且 >= 主設定的 50%,主設定 +0.0913R；2 組鄰近：+0.1284、+0.0121
+vegas_trend_only,vegas_trend_only|2H|fix15,baseline_corr,與實盤基準的相關性,pass,0.2580871781093088,< 0.5,出場日加總的日報酬相關係數（2465 天，基準 17793 筆）
+vegas_trend_only,vegas_trend_only|2H|fix15,robust_drop_coins,拿掉前 5 大幣後 > 0,pass,0.07110614106691936,> 0,"拿掉總 R 最高的 5 個幣（APTUSDT, AAVEUSDT, COTIUSDT, DYDXUSDT, INJUSDT）後平均 +0.0711R"
+vegas_trend_only,vegas_trend_only|2H|fix15,robust_drop_year,拿掉最好的一年後 > 0,pass,0.06888074745650526,> 0,拿掉最好的一年（2021，合計 +135.9R）後平均 +0.0689R
+vegas_trend_only,vegas_trend_only|2H|fix15,robust_drop_days,拿掉最好的 5 個出場日後 > 0,pass,0.061785685082316584,> 0,"拿掉最好的 5 個出場日（2025-10-30, 2024-11-23, 2022-06-10, 2025-10-10, 2022-04-25；合計 +125.3R）後平均 +0.0618R"
+vegas_trend_only,vegas_trend_only|2H|fix15,sides,多空拆分（參考）,info,"{""long"": 0.049918867762212354, ""short"": 0.1303576497241567}",,多單 1948 筆 +0.0499R；空單 2069 筆 +0.1304R
