@@ -1,0 +1,10 @@
+cond,verdict,n_trades,mean_in_sample,mean_oos,cluster_t,deflated_sharpe,beats_random,plateau,baseline_corr,robust_drop_coins,robust_drop_year,robust_drop_days,sides
+rsi_div,FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe、與實盤基準的相關性（另有未執行的檢查，結論也不完整 incomplete）,pass,pass,pass,fail,fail,skipped,pass,fail,pass,pass,pass,info
+macd_div,FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe、與實盤基準的相關性（另有未執行的檢查，結論也不完整 incomplete）,pass,pass,pass,fail,fail,skipped,pass,fail,pass,pass,pass,info
+any_div,FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe、與實盤基準的相關性（另有未執行的檢查，結論也不完整 incomplete）,pass,pass,pass,fail,fail,skipped,pass,fail,pass,pass,pass,info
+rsi_hdiv,FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe、與實盤基準的相關性（另有未執行的檢查，結論也不完整 incomplete）,pass,pass,pass,fail,fail,skipped,pass,fail,pass,pass,pass,info
+macd_hdiv,FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe、與實盤基準的相關性（另有未執行的檢查，結論也不完整 incomplete）,pass,pass,pass,fail,fail,skipped,pass,fail,pass,pass,pass,info
+bb_out,FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe、與實盤基準的相關性（另有未執行的檢查，結論也不完整 incomplete）,pass,pass,pass,fail,fail,skipped,pass,fail,pass,pass,pass,info
+bb_squeeze,FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe、與實盤基準的相關性（另有未執行的檢查，結論也不完整 incomplete）,pass,pass,pass,fail,fail,skipped,pass,fail,pass,pass,pass,info
+bb_touch,FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe、與實盤基準的相關性（另有未執行的檢查，結論也不完整 incomplete）,pass,pass,pass,fail,fail,skipped,pass,fail,pass,pass,pass,info
+no_opp_div,FAIL 未通過：嚴格群集 t（四種分群取最小）、Deflated Sharpe、與實盤基準的相關性（另有未執行的檢查，結論也不完整 incomplete）,pass,pass,pass,fail,fail,skipped,pass,fail,pass,pass,pass,info
