@@ -6,12 +6,16 @@ const TZ_SHIFT = 8 * 3600; // 圖表用 UTC+8 顯示
 const INTERVAL_SEC = { "15M": 900, "30M": 1800, "60M": 3600, "2H": 7200, "4H": 14400, "8H": 28800, "12H": 43200, "1D": 86400 };
 const LABEL = { "60M": "1H" };
 const KIND_TEXT = { TP1: "TP1 觸及", TP2: "TP2 觸及", TP3: "TP3 觸及", STOP_MOVED: "保護止損移動",
-  SL: "止損出場", BE_EXIT: "保本出場", PROTECT_EXIT: "保護止損出場", TRAIL_MOVED: "追蹤止損上移", TRAIL_EXIT: "追蹤止損出場", TIMEOUT: "逾時平倉", NEW: "新訊號" };
+  SL: "止損出場", BE_EXIT: "保本出場", PROTECT_EXIT: "保護止損出場", TRAIL_MOVED: "追蹤止損上移", TRAIL_EXIT: "追蹤止損出場", TIMEOUT: "逾時平倉", NEW: "新訊號", FILLED: "掛單成交", EXPIRED: "未成交取消" };
 
 /** 出場規則的文字。訊號的 exit 沒寫就是舊的預設：TP1/2/3 各平 1/3。 */
 function exitRuleText(s) {
   const e = s.exit || {};
   const n = s.tps.length;
+  if (e.limit) {  // 日線吞沒：掛單進場、單一 1R 止盈全平
+    const rr = +(Math.abs(s.tps[0] - s.price) / Math.abs(s.price - s.sl)).toFixed(2);
+    return `掛單在吞沒 K 實體一半（${fp(s.price)}），${e.fill_bars || 3} 天內沒成交就取消；成交後止損 1.5 倍 ATR（從掛單價算），TP1（${rr}R）全平，沒有保本和追蹤；成交後 ${e.max_bars || 60} 根日線還沒出場就收盤平倉`;
+  }
   const parts = (e.portions || [1 / 3, 1 / 3, 1 / 3]).slice(0, n);
   const fr = (p) => Math.abs(p - 0.5) < 1e-6 ? "一半" : Math.abs(p - 1 / 3) < 1e-6 ? "1/3" : Math.abs(p - 0.25) < 1e-6 ? "1/4" : `${Math.round(p * 100)}%`;
   const risk = Math.abs(s.price - s.sl);
@@ -104,9 +108,12 @@ const btFor = (iv) => btSummary[iv === "ALL" ? "4H+2H" : lbl(iv)];
 // ---------- 計算 ----------
 function dir(s) { return s.side === "LONG" ? 1 : -1; }
 function priceMove(s, price) { return price == null ? null : (dir(s) * (price - s.price) / s.price) * 100; }
-/** 1 倍槓桿下的倉位盈虧 %：已平倉部分（扣手續費）+ 剩餘倉位的浮動。 */
+/** 還在進行中（持倉中，或限價單掛著還沒成交）。 */
+const isActive = (s) => s.track.status === "OPEN" || s.track.status === "PENDING";
+/** 1 倍槓桿下的倉位盈虧 %：已平倉部分（扣手續費）+ 剩餘倉位的浮動。限價單還沒成交（或沒成交取消）沒有倉位，是 0。 */
 function positionPnl(s, price) {
   const t = s.track;
+  if (t.status === "PENDING" || t.status === "EXPIRED") return 0;
   if (t.status === "CLOSED" || price == null) return t.realized_pct;
   return t.realized_pct + t.remaining * priceMove(s, price);
 }
@@ -214,7 +221,9 @@ function ladderHtml(s, price) {
   const kinds = new Set(t.events.map((e) => e.kind));
   const rows = s.tps.map((p, k) => [`TP${k + 1}`, p, kinds.has(`TP${k + 1}`), "tp"]).reverse();
   if (t.trailing) rows.unshift(["追蹤止損", t.stop, kinds.has("TRAIL_EXIT"), "be"]);
-  rows.push(["BE", t.be, kinds.has("BE_EXIT"), "be"], ["進場", s.price, true, "entry"], ["SL", s.sl, kinds.has("SL"), "sl"]);
+  const lim = !!(s.exit && s.exit.limit);
+  if (s.tps.length > 1 || !lim) rows.push(["BE", t.be, kinds.has("BE_EXIT"), "be"]);
+  rows.push([lim ? "掛單價" : "進場", s.price, true, "entry"], ["SL", s.sl, kinds.has("SL"), "sl"]);
   return `<div class="ladder">${rows.map(([name, p, hit, cls]) => {
     const dist = d * (p - s.price) / s.price * 100;
     return `<div class="lv ${cls} ${hit && cls !== "entry" ? "hit" : ""}">
@@ -236,6 +245,8 @@ function timelineHtml(s) {
 function statusText(s) {
   const t = s.track;
   if (t.status === "OPEN") return { cls: "", text: "● 持倉中" };
+  if (t.status === "PENDING") return { cls: "", text: "◌ 掛單中（未成交）" };
+  if (t.status === "EXPIRED") return { cls: "closed", text: "未成交，已取消" };
   const last = t.events[t.events.length - 1];
   return { cls: "closed", text: `已結束 · ${KIND_TEXT[last.kind] || last.kind}` };
 }
@@ -246,6 +257,12 @@ function advChip(s) {
   const adv = (s.info || {}).adv_usdt;
   if (adv == null || adv >= LIVE_MIN_ADV) return "";
   return `<span class="chip warn-chip" title="近 30 天日均成交額 ${Math.round(adv / 1e4).toLocaleString()} 萬 U，低於 3,000 萬，實盤不做">成交額不足・實盤不做</span>`;
+}
+
+/** 盈虧數字旁的說明：持倉中是未實現，結束是已實現，限價單還沒成交（或取消）沒有倉位。 */
+function pnlLabel(s) {
+  const st = s.track.status;
+  return st === "OPEN" ? "未實現盈虧" : st === "PENDING" ? "尚未成交" : st === "EXPIRED" ? "未成交" : "已實現盈虧";
 }
 
 function cardHtml(s) {
@@ -259,8 +276,9 @@ function cardHtml(s) {
       <span class="pair">${coinHtml(s)}</span>
       <span class="chip">${s.label}</span>${advChip(s)}
       <span class="status ${st.cls}">${st.text}</span></div>
-    <div class="meta">${esc(title)} · ${ago(s.time)} · 訊號價 ${fp(s.price)}</div>
-    <div class="pnl"><div class="big num ${pnl >= 0 ? "up" : "down"}">${pct(pnl)}<small>${s.track.status === "OPEN" ? "未實現盈虧" : "已實現盈虧"}（1x）</small></div>
+    <div class="meta">${esc(title)} · ${ago(s.time)} · ${s.exit && s.exit.limit ? "掛單價" : "訊號價"} ${fp(s.price)}</div>
+    ${s.exit && s.exit.limit ? `<div class="meta">掛單在吞沒 K 實體一半，${s.exit.fill_bars || 3} 天內沒成交就取消</div>` : ""}
+    <div class="pnl"><div class="big num ${pnl >= 0 ? "up" : "down"}">${pct(pnl)}<small>${pnlLabel(s)}（1x）</small></div>
       <div class="right num">價格 ${pct(mv)}<br>現價 ${fp(price, s.price)}</div></div>
     ${ladderHtml(s, price)}
     ${timelineHtml(s)}
@@ -270,7 +288,7 @@ function cardHtml(s) {
 /** 選了單一週期而且清單是空的時候，提醒其他週期還有幾筆。 */
 function hiddenNote(inMarket) {
   if (ivFilter === "ALL") return "";
-  const n = inMarket.filter((s) => s.interval !== ivFilter && (tab === "OPEN") === (s.track.status === "OPEN")).length;
+  const n = inMarket.filter((s) => s.interval !== ivFilter && (tab === "OPEN") === isActive(s)).length;
   return n ? `<br><span class="muted">其他週期還有 ${n} 筆，點上方「全部週期」查看</span>` : "";
 }
 
@@ -281,12 +299,12 @@ function renderList() {
   const inMarket = state.signals.filter((s) => isLive(s.strategy, mk(s)));
   ivTabsEl().classList.toggle("hidden", ivs.length < 2);
   ivTabsEl().innerHTML = ["ALL", ...ivs].map((iv) => {
-    const n = inMarket.filter((s) => (iv === "ALL" || s.interval === iv) && s.track.status === "OPEN").length;
+    const n = inMarket.filter((s) => (iv === "ALL" || s.interval === iv) && isActive(s)).length;
     return `<button class="ivtab ${iv === ivFilter ? "active" : ""}" data-iv="${iv}">${iv === "ALL" ? "全部週期" : lbl(iv)} <span>${n || ""}</span></button>`;
   }).join("");
   const mine = inMarket.filter((s) => ivFilter === "ALL" || s.interval === ivFilter);
-  const open = mine.filter((s) => s.track.status === "OPEN");
-  const closed = mine.filter((s) => s.track.status !== "OPEN");
+  const open = mine.filter(isActive);
+  const closed = mine.filter((s) => !isActive(s));
   $("n-open").textContent = open.length;
   $("n-closed").textContent = closed.length;
   const shown = tab === "OPEN" ? open : closed;
@@ -310,7 +328,7 @@ function renderDetailHead() {
     <div class="row1"><span class="pair">${pair(s.symbol)}</span><span class="chip">${s.label}</span>${advChip(s)}
       <span class="dir ${s.side === "LONG" ? "up" : "down"}">${s.side}</span></div>
     <div class="muted">訊號時間 ${fmtTime(s.time)}（${s.label} K 線收盤確認）· UTC+8</div>
-    <div class="prices"><div><span class="muted">訊號價格</span><b class="num">${fp(s.price)}</b></div>
+    <div class="prices"><div><span class="muted">${s.exit && s.exit.limit ? "掛單價" : "訊號價格"}</span><b class="num">${fp(s.price)}</b></div>
       <div><span class="muted">現價</span><b class="num ${priceMove(s, price) >= 0 ? "up" : "down"}">${fp(price, s.price)}</b></div></div>
     <details><summary>RSI 與策略資訊</summary><div class="kv num">
       <span>策略</span><span>${esc((state.strategies[s.strategy] || {}).title || s.strategy)}</span>
@@ -334,7 +352,7 @@ function renderLevels() {
   const s = current;
   const pnl = positionPnl(s, s.live);
   $("detail-levels").innerHTML = `<div class="pnl"><div class="big num ${pnl >= 0 ? "up" : "down"}">${pct(pnl)}
-      <small>${s.track.status === "OPEN" ? "未實現" : "已實現"}（1x 含費）</small></div>
+      <small>${s.track.status === "OPEN" ? "未實現" : s.track.status === "PENDING" || s.track.status === "EXPIRED" ? "未成交" : "已實現"}（1x 含費）</small></div>
       <div class="right">${statusText(s).text}</div></div>
     ${ladderHtml(s, s.live)}${timelineHtml(s)}`;
 }

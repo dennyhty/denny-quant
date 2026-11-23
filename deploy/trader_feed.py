@@ -7,7 +7,7 @@
 網址是 http://VPS的IP:8787/<FEED_TOKEN>/trader.json；token 不對一律回 404。
 把這個網址存成 GitHub 的 Actions secret「TRADER_FEED_URL」，網站每 15 分鐘更新時會抓一次。
 
-輸出只有交易紀錄（含交易程式的心跳 heartbeat）：持倉（幣、方向、進場價、止損、TP、數量）、已平倉（損益、R）、每個週期掃到哪根 K 線。
+輸出只有交易紀錄（含交易程式的心跳 heartbeat）：持倉（幣、策略、方向、進場價、止損、TP、數量）、已平倉（策略、損益、R）、每個週期掃到哪根 K 線。
 不含金鑰、訂單編號、帳戶設定。未平倉的浮動損益用幣安公開的標記價格估算。
 """
 
@@ -60,11 +60,14 @@ def position(p: dict, prices: dict) -> dict:
     hits = tps_hit(p)
     out = {k: p.get(k) for k in ("id", "symbol", "interval", "side", "entry", "stop", "tps", "opened",
                                  "risk_usdt", "base_usdt", "risk_mult")}
+    out["strategy"] = p.get("strategy") or "vegas_trend"  # 舊狀態檔的單沒有這欄，都是維加斯
+    if p.get("pending"):
+        out["pending"] = True  # 限價單還在等成交（日線吞沒最多等 3 天），還沒有倉位
     out["qty"] = qty
     out["tps_hit"] = hits
     out["signal_time"] = (p.get("signal") or {}).get("time")
     mark = prices.get(p["symbol"])
-    if mark and qty and p.get("base_usdt"):
+    if mark and qty and p.get("base_usdt") and not p.get("pending"):  # 限價單還沒成交：沒有倉位，不算浮動損益
         if "remaining" in p and "fills" in p:  # 測試網/實盤：已成交的部分照成交價，剩下的照標記價格
             part = sum(d * (price - p["entry"]) * q for q, price in p["fills"])
             rest = float(p["remaining"]) * d * (mark - p["entry"])
@@ -105,7 +108,8 @@ def build(state_dir: Path) -> dict:
             "paused": (state_dir / "pause").exists(),
             "heartbeat": heartbeat(state_dir, mode),
             "positions": [position(p, prices or {}) for p in data.get("positions", {}).values()],
-            "ledger": [{k: x.get(k) for k in ("id", "symbol", "interval", "side", "opened", "closed", "pnl", "r")}
+            "ledger": [{**{k: x.get(k) for k in ("id", "symbol", "interval", "side", "opened", "closed", "pnl", "r")},
+                        "strategy": x.get("strategy") or "vegas_trend"}  # 舊紀錄沒有策略欄，都是維加斯
                        for x in data.get("ledger", [])],
         }
     return {"generated": int(time.time() * 1000), "books": books}

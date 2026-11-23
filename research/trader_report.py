@@ -76,6 +76,11 @@ def window_rows(ledger: list[dict], days: int | None, now_ms: float) -> list[dic
     return [x for x in ledger if x["closed"] >= now_ms - days * 86_400_000]
 
 
+def strategy_of(row: dict) -> str:
+    """已平倉紀錄的策略；2026-11-23 以前的紀錄沒有 strategy 欄，都是維加斯。"""
+    return row.get("strategy") or "vegas_trend"
+
+
 def build(feed: dict, window: str, now_ms: float | None = None) -> dict:
     now_ms = now_ms or time.time() * 1000
     days = WINDOWS[window]
@@ -84,17 +89,23 @@ def build(feed: dict, window: str, now_ms: float | None = None) -> dict:
         ledger = b.get("ledger", [])
         rows = window_rows(ledger, days, now_ms)
         allst = stats(ledger)
+        # 回測基準（BASELINE_R）是維加斯的：降級提醒只看維加斯的單，日線吞沒另外分開列（by_strategy）
+        vegas_st = stats([x for x in ledger if strategy_of(x) == "vegas_trend"])
+        by_strategy = {}
+        for sname in sorted({strategy_of(x) for x in ledger}):
+            by_strategy[sname] = {"window": stats([x for x in rows if strategy_of(x) == sname]),
+                                  "all_time": stats([x for x in ledger if strategy_of(x) == sname])}
         notes = []
         age_min = (now_ms - b.get("updated", 0)) / 60_000
         if age_min > STALE_MIN:
             notes.append(f"紀錄已 {age_min:.0f} 分鐘沒更新（trader 可能停了）")
         if b.get("paused"):
             notes.append("開新倉已暫停（pause 檔存在）")
-        if (allst["trades"] >= DEMOTE_MIN_TRADES and allst["days"] >= DEMOTE_MIN_DAYS and not math.isnan(allst["se_day"])
-                and allst["mean_r"] < BASELINE_R - 2 * allst["se_day"]):
-            notes.append(f"累積 {allst['trades']} 筆（{allst['days']} 個平倉日）每筆 {allst['mean_r']:+.3f}R，"
+        if (vegas_st["trades"] >= DEMOTE_MIN_TRADES and vegas_st["days"] >= DEMOTE_MIN_DAYS
+                and not math.isnan(vegas_st["se_day"]) and vegas_st["mean_r"] < BASELINE_R - 2 * vegas_st["se_day"]):
+            notes.append(f"維加斯累積 {vegas_st['trades']} 筆（{vegas_st['days']} 個平倉日）每筆 {vegas_st['mean_r']:+.3f}R，"
                          f"比回測 {BASELINE_R:+.3f}R 低超過 2 個標準誤（按日分群，降級提醒，只通知）")
-        books[name] = {"window": stats(rows), "all_time": allst, "open_positions": len(b.get("positions", [])),
+        books[name] = {"window": stats(rows), "all_time": allst, "by_strategy": by_strategy, "open_positions": len(b.get("positions", [])),
                        "open": [{k: p.get(k) for k in ("symbol", "interval", "side", "entry", "stop", "tps_hit", "unrealized_r", "unrealized_pnl") if k in p}
                                 for p in b.get("positions", [])],
                        "notes": notes, "processed": b.get("processed")}
@@ -115,6 +126,12 @@ def to_md(rep: dict) -> str:
         if a["trades"]:
             se = f"，標準誤 {a['se']:.3f}（按日分群 {a['se_day']:.3f}，{a['days']} 個平倉日）" if not math.isnan(a["se_day"]) else ""
             lines.append(f"- 累積：{a['trades']} 筆，勝率 {a['win_rate']:.0%}，每筆 {a['mean_r']:+.3f}R{se}，合計 {a['sum_r']:+.2f}R")
+        if len(b.get("by_strategy", {})) > 1 or any(k != "vegas_trend" for k in b.get("by_strategy", {})):
+            for sname, sb in b["by_strategy"].items():
+                sa = sb["all_time"]
+                if sa["trades"]:
+                    lines.append(f"  - {sname}：累積 {sa['trades']} 筆，勝率 {sa['win_rate']:.0%}，每筆 {sa['mean_r']:+.3f}R，"
+                                 f"合計 {sa['sum_r']:+.2f}R（期間 {sb['window']['trades']} 筆）")
         lines.append(f"- 目前持倉 {b['open_positions']} 張")
         for n in b["notes"]:
             lines.append(f"- ⚠ {n}")

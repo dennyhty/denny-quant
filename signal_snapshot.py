@@ -1,6 +1,6 @@
 """產生靜態網站用的資料快照：python signal_snapshot.py --out site
 
-給 GitHub Pages 用。GitHub Actions 每 15 分鐘跑一次：用幣安 USDT 永續合約的 K 線掃描實盤維加斯 4H / 2H、
+給 GitHub Pages 用。GitHub Actions 每 15 分鐘跑一次：用幣安 USDT 永續合約的 K 線掃描實盤維加斯 4H / 2H 和日線吞沒 1D、
 寫出 JSON，網頁（web/）直接讀這些 JSON，不需要一直開著的伺服器。2026-10-20 起只用幣安（和 VPS 上的自動交易同一份合約名單），
 派網、觀察組、美股/商品都不再掃描。
 
@@ -43,8 +43,8 @@ def main() -> int:
     p.add_argument("--web", default="web", help="網頁原始檔，會複製到 --out")
     p.add_argument("--previous", help="上一次的 notifications.json，用來接續通知紀錄")
     p.add_argument("--ledger", help="上一次的 ledger.json（實盤紀錄），沒有就從頭開始")
-    p.add_argument("--strategies", nargs="+", default=["vegas_trend"], choices=sorted(signals.REGISTRY))
-    p.add_argument("--intervals", nargs="+", default=["4H", "2H"])
+    p.add_argument("--strategies", nargs="+", default=["vegas_trend", "engulf_1d"], choices=sorted(signals.REGISTRY))
+    p.add_argument("--intervals", nargs="+", default=["4H", "2H", "1D"])
     p.add_argument("--keep-days", type=float, default=7)
     p.add_argument("--previous-state", help="上一次的 state.json；這次 K 線沒抓到的（幣, 週期）沿用裡面的訊號")
     p.add_argument("--max-failed", type=float, default=0.5,

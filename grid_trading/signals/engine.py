@@ -20,6 +20,8 @@ from .tracker import track
 INTERVAL_MS = {"15M": 900_000, "30M": 1_800_000, "60M": 3_600_000, "2H": 7_200_000, "4H": 14_400_000,
                "8H": 28_800_000, "12H": 43_200_000, "1D": 86_400_000}
 LABEL = {"60M": "1H"}
+# 追蹤結果的狀態：這些算結束了（CLOSED 出場；EXPIRED 限價單沒成交、取消）。PENDING / OPEN 還在進行
+ENDED = ("CLOSED", "EXPIRED")
 
 
 def label(interval: str) -> str:
@@ -191,7 +193,7 @@ class Engine:
         # 網站上的持倉才不會在第 7 天消失，之後的 TP / 止損也照樣推播
         lingering: dict[tuple, list[dict]] = {}
         for sid, old in (self.previous or self.signals).items():
-            is_open = (old.get("track") or {}).get("status") == "OPEN"
+            is_open = (old.get("track") or {}).get("status") in ("OPEN", "PENDING")
             if (old["symbol"], old["interval"]) in failed:
                 if is_open or now - pd.Timestamp(old["time"], unit="ms", tz="UTC") <= self.keep:
                     found[sid] = old
@@ -240,7 +242,7 @@ class Engine:
                                          strat.name, old.get("info") or {}, old.get("exit") or {})
                             res = track(sig, df, self.fee)
                             found[old["id"]] = {**old, "track": res.to_dict()}
-                        held.append((t0, res.events[-1].time if res.status == "CLOSED" else now + bar))
+                        held.append((t0, res.events[-1].time if res.status in ENDED else now + bar))
                     busy_until = None
                     for sid, sig in scanned.items():
                         if sid not in published and int(sig.time.timestamp() * 1000) <= before:
@@ -250,7 +252,7 @@ class Engine:
                                 any(t0 <= sig.time < t1 for t0, t1 in held):
                             continue
                         res = track(sig, df, self.fee)  # 含尚未收盤的那根，盤中觸及也算
-                        end = res.events[-1].time if res.status == "CLOSED" else now + bar
+                        end = res.events[-1].time if res.status in ENDED else now + bar
                         if any(sig.time < t0 < end for t0, _ in held):
                             continue  # 會和已經發出的單重疊
                         busy_until = end
@@ -284,7 +286,7 @@ class Engine:
                 found.pop(s["id"], None)
                 continue
             tr = s.get("track") or {}
-            end = tr["events"][-1]["time"] if tr.get("status") == "CLOSED" and tr.get("events") else 2 ** 62
+            end = tr["events"][-1]["time"] if tr.get("status") in ENDED and tr.get("events") else 2 ** 62
             taken.setdefault(key, []).append((s["time"], end, s["interval"]))
         # 只留還可能被重新掃到的（掃描範圍再多一天）
         cut = (now - self.keep - pd.Timedelta(days=1)).timestamp() * 1000
@@ -317,7 +319,8 @@ class Engine:
             if old is None and not any(n["signal_id"] == sid and n["kind"] == "NEW" for n in self.notifications):
                 # 第一次出現時已經是 3 根 K 線以前的訊號（例如剛加上的新週期補掃到的舊訊號）：記下來但不推播
                 quiet = quiet or now - s["time"] > 3 * INTERVAL_MS[s["interval"]]
-                self._push(sid, "NEW", s["time"], f"{pair} {s['label']} {side}訊號 @ {s['price']:.6g}", quiet, bool(tag))
+                what = f"{side}訊號（{strat.short}，掛單）" if strat is not None and strat.short else f"{side}訊號"
+                self._push(sid, "NEW", s["time"], f"{pair} {s['label']} {what} @ {s['price']:.6g}", quiet, bool(tag))
             # 用通知 id 比對哪些事件已經通知過，不用「第幾個事件」：出場規則改了、事件清單跟著變時，
             # 用數量比對會漏推或推錯
             count: Counter = Counter()
@@ -372,7 +375,7 @@ class Engine:
             notes = list(reversed(self.notifications[-100:]))
         for s in sigs:
             s["live"] = prices.get(s["symbol"])
-        strategies = {n: {"title": s.title, "description": s.description, "tag": s.tag,
+        strategies = {n: {"title": s.title, "short": s.short, "description": s.description, "tag": s.tag,
                           "market_tags": dict(s.market_tags),
                           "intervals": [label(i) for i in s.intervals] if s.intervals else None,
                           "markets": list(s.markets) if s.markets else None}

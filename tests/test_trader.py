@@ -1662,3 +1662,300 @@ def test_check_flag_paper_exits_0_and_missing_keys_exit_1(monkeypatch, capsys):
     monkeypatch.delenv("BINANCE_API_SECRET", raising=False)
     monkeypatch.setenv("TRADER_ALLOW_LIVE", "1")
     assert bt.main(["--mode", "live", "--check"]) == 1
+
+
+# ---------- 日線吞沒 engulf_1d（2026-11-23 起）----------
+import json  # noqa: E402
+
+import grid_trading.trader.bot as botmod  # noqa: E402
+from grid_trading.trader.bot import client_tag, pos_id, slot_key  # noqa: E402
+
+E_T = pd.Timestamp("2026-11-20", tz="UTC")   # 吞沒 K 的收盤時間（= 訊號時間）
+DAY_MS = 86_400_000
+
+
+def engulf_signal(side=SHORT, px=100.0, risk=6.0, t=E_T):
+    d = 1 if side == LONG else -1
+    return Signal("XUSDT", "1D", side, t, px, px - d * risk, [px + d * risk], "engulf_1d",
+                  {"atr": risk / 1.5, "adv_usdt": 1e6},
+                  {"portions": [1.0], "limit": True, "fill_bars": 3, "max_bars": 60, "bar_ms": DAY_MS})
+
+
+def make_engulf(tmp_path, ex, monkeypatch, at=None, **kw):
+    """at：假的現在時間（Unix 秒），預設是訊號收盤後 1 小時。回傳 (trader, sink, broker, clock)。"""
+    clock = [E_T.timestamp() + 3600 if at is None else at]
+    monkeypatch.setattr(botmod.time, "time", lambda: clock[0])
+    cfg = Config(mode="testnet", state_dir=tmp_path, coins=["X"], **kw)
+    sink = []
+    broker = LiveBroker(ex, ex, cfg)
+    tr = Trader(cfg, ex, broker, Notifier("test", sink=sink), {"XUSDT": F})
+    return tr, sink, broker, clock
+
+
+def at(clock):
+    return pd.Timestamp(clock[0], unit="s", tz="UTC")
+
+
+def test_engulf_ids_and_tags_never_collide_with_vegas():
+    v, g = make_signal(SHORT, interval="1D", t=E_T), engulf_signal()
+    assert pos_id(v) == "XUSDT|1D|SHORT|1795132800"                 # 維加斯：舊格式不變
+    assert pos_id(g) == pos_id(v) + "|engulf_1d"
+    assert client_tag(v).startswith("v1D") and client_tag(g).startswith("g1D") and client_tag(v) != client_tag(g)
+    assert len(client_tag(g)) + len("s12c") <= 36
+    assert slot_key("vegas_trend", "2H") == "2H" and slot_key("engulf_1d", "1D") == "engulf_1d|1D"
+
+
+def test_engulf_slot_is_scanned_at_daily_close_and_can_be_turned_off(tmp_path):
+    ex = FakeExchange()
+    cfg = Config(mode="testnet", state_dir=tmp_path, coins=["X"])
+    tr = Trader(cfg, ex, LiveBroker(ex, ex, cfg), Notifier("test", sink=[]), {"XUSDT": F})
+    assert tr.slots == [("vegas_trend", "2H"), ("vegas_trend", "4H"), ("engulf_1d", "1D")]
+    day = pd.Timestamp("2026-11-21 00:00:20", tz="UTC")
+    assert tr.due(day - pd.Timedelta(hours=1)) == []                      # 第一次只記時間
+    assert tr.due(day) == ["2H", "4H", "engulf_1d|1D"]                    # 00:00 UTC：2H、4H、日線一起收盤
+    tr.store.processed.update({k: int(day.floor(botmod.BAR[iv]).timestamp() * 1000)
+                               for k, iv in (("2H", "2H"), ("4H", "4H"), ("engulf_1d|1D", "1D"))})
+    assert tr.due(day + pd.Timedelta(hours=2)) == ["2H"]
+    assert tr.due(day + pd.Timedelta(hours=4)) == ["2H", "4H"]            # 日線一天只掃一次
+    assert tr.next_scan(day.timestamp() + 5) == day.floor("2h").timestamp() + 7200 + cfg.scan_delay
+    off = Trader(Config(mode="testnet", state_dir=tmp_path / "off", coins=["X"], engulf=False), ex,
+                 LiveBroker(ex, ex, cfg), Notifier("test", sink=[]), {"XUSDT": F})
+    assert off.slots == [("vegas_trend", "2H"), ("vegas_trend", "4H")]
+
+
+def test_find_signals_uses_the_slot_strategy(tmp_path, monkeypatch):
+    ex = FakeExchange()
+    tr, sink, _, _ = make_engulf(tmp_path, ex, monkeypatch)
+    seen = {}
+
+    class Spy:
+        def scan(self, df, sym, interval, start=None):
+            seen[interval] = len(df)
+            return []
+
+    tr.strategies = {"vegas_trend": Spy(), "engulf_1d": Spy()}
+    df = candles([(101, 99, 100)] * 300, start=E_T - pd.Timedelta(days=300), freq="1D")
+    tr.data = type("D", (), {"klines": lambda self, s, iv, n: df})()
+    tr.symbols = {"XUSDT": "X"}
+    tr.find_signals("1D", E_T, "engulf_1d")
+    assert seen == {"1D": 300}
+
+
+def test_engulf_min_adv_is_separate_from_vegas(tmp_path, monkeypatch):
+    ex = FakeExchange(price=100.0)
+    tr, sink, _, clock = make_engulf(tmp_path, ex, monkeypatch, min_adv=5e7)    # 只管維加斯
+    sig = engulf_signal()
+    sig.info["adv_usdt"] = 1e6                                                  # 很小：維加斯會擋，日線吞沒不擋
+    tr.try_open(sig)
+    assert len(tr.store.positions) == 1
+    tr2, sink2, _, _ = make_engulf(tmp_path / "b", FakeExchange(), monkeypatch, engulf_min_adv=5e7)
+    tr2.try_open(engulf_signal())
+    assert not tr2.store.positions and "不做" in sink2[-1] and "5,000 萬 U" in sink2[-1]
+
+
+def test_engulf_rests_as_gtc_limit_until_filled_then_arms_one_stop_and_one_tp(tmp_path, monkeypatch):
+    ex = FakeExchange(price=95.0, df=candles([(101, 99, 100)] * 3))
+    tr, sink, _, clock = make_engulf(tmp_path, ex, monkeypatch, maker_entry=True, maker_tp=True)
+    tr.try_open(engulf_signal())
+    pos = next(iter(tr.store.positions.values()))
+    lim = next(iter(ex.orders.values()))
+    assert pos["strategy"] == "engulf_1d" and pos["id"].endswith("|engulf_1d") and pos["tag"].startswith("g1D")
+    assert lim["tif"] == "GTC" and lim["price"] == 100.0 and lim["side"] == "SELL" and lim["qty"] == pytest.approx(0.416)
+    assert pos["pending"]["resting"] and pos["pending"]["deadline"] == E_T.timestamp() + 3 * 86400
+    assert "日線吞沒" in sink[-1] and "3 天內沒成交就取消" in sink[-1]
+    clock[0] += 2 * 86400                                              # 兩天後還在等，不追市價、沒有倉位和止損
+    tr.step_manage(at(clock))
+    assert pos["pending"] and not ex.algo and not ex.positions() and lim["status"] == "NEW"
+    ex.fill_limit(lim["orderId"])
+    tr.step_manage(at(clock))
+    assert "pending" not in pos and pos["entry"] == pytest.approx(100.0) and pos["remaining"] == pytest.approx(0.416)
+    stop = next(o for o in ex.algo.values() if o["type"] == "STOP_MARKET")
+    assert stop["trigger"] == pytest.approx(106.0) and stop["qty"] == pytest.approx(0.416)
+    tps = [o for o in ex.orders.values() if o["side"] == "BUY"]
+    assert [(o["price"], o["qty"]) for o in tps] == [(pytest.approx(94.0), pytest.approx(0.416))]   # 1R、全平
+    assert len(pos["tp_ids"]) == 1
+    assert pos["exit_at"] == (int(clock[0] * 1000) // DAY_MS + 61) * DAY_MS
+    assert "日線吞沒" in sink[-1] and "進場 0.416 @ 100" in sink[-1]
+    # TP 成交：全平，沒有保本移止損，記帳帶策略名
+    ex.fill_limit(tps[0]["orderId"])
+    tr.step_manage(at(clock))
+    assert not tr.store.positions and not ex.positions() and not ex.algo
+    row = tr.store.ledger[-1]
+    assert row["strategy"] == "engulf_1d" and row["r"] > 0.9 and row["pnl_source"] == "fills"
+    assert not any("保護止損" in m for m in sink)
+
+
+def test_engulf_not_filled_within_three_days_is_cancelled_without_market_order(tmp_path, monkeypatch):
+    ex = FakeExchange(price=95.0)
+    tr, sink, _, clock = make_engulf(tmp_path, ex, monkeypatch)
+    tr.try_open(engulf_signal())
+    lim = next(iter(ex.orders.values()))
+    clock[0] = E_T.timestamp() + 3 * 86400 - 1
+    tr.step_manage(at(clock))
+    assert tr.store.positions and lim["status"] == "NEW"
+    clock[0] += 2
+    tr.step_manage(at(clock))
+    assert lim["status"] == "CANCELED" and not tr.store.positions and not tr.store.ledger
+    assert not ex.positions() and not ex.algo and "沒有成交" in sink[-1]
+
+
+def test_engulf_partial_fill_keeps_filled_part_and_cancels_rest(tmp_path, monkeypatch):
+    ex = FakeExchange(price=95.0)
+    tr, sink, _, clock = make_engulf(tmp_path, ex, monkeypatch)
+    tr.try_open(engulf_signal())
+    pos = next(iter(tr.store.positions.values()))
+    lim = next(iter(ex.orders.values()))
+    ex.fill_limit(lim["orderId"], 0.2)
+    tr.step_manage(at(clock))
+    assert pos.get("pending")                                          # 剛部分成交：先等一下剩下的
+    clock[0] += 61                                                     # 超過 60 秒仍沒成交完：留下已成交的、取消剩下的
+    tr.step_manage(at(clock))
+    assert "pending" not in pos and lim["status"] == "CANCELED"
+    assert ex.positions()[("XUSDT", "SHORT")] == pytest.approx(0.2)   # 沒有市價補單
+    stop = next(o for o in ex.algo.values() if o["type"] == "STOP_MARKET")
+    assert stop["qty"] == pytest.approx(0.2) and pos["qty_f"] == pytest.approx(0.2)
+    assert "其餘取消" in sink[-1]
+
+
+def test_engulf_expiry_with_partial_fill_arms_filled_part(tmp_path, monkeypatch):
+    ex = FakeExchange(price=95.0)
+    tr, sink, _, clock = make_engulf(tmp_path, ex, monkeypatch)
+    tr.try_open(engulf_signal())
+    pos = next(iter(tr.store.positions.values()))
+    ex.fill_limit(next(iter(ex.orders)), 0.1)
+    clock[0] = E_T.timestamp() + 3 * 86400 + 1
+    tr.step_manage(at(clock))
+    assert "pending" not in pos and pos["qty_f"] == pytest.approx(0.1) and ex.positions()[("XUSDT", "SHORT")] == pytest.approx(0.1)
+
+
+def test_engulf_and_vegas_share_a_side_with_their_own_quantities(tmp_path, monkeypatch):
+    ex = FakeExchange(price=100.0)
+    tr, sink, broker, clock = make_engulf(tmp_path, ex, monkeypatch)
+    tr.try_open(make_signal(SHORT, interval="2H", t=E_T))              # 維加斯（市價進場）
+    tr.try_open(engulf_signal())                                       # 日線吞沒（限價掛著）
+    assert len(tr.store.positions) == 2
+    g = next(p for p in tr.store.positions.values() if p["strategy"] == "engulf_1d")
+    v = next(p for p in tr.store.positions.values() if p["strategy"] == "vegas_trend")
+    assert "pending" in g and "pending" not in v
+    ex.fill_limit(g["pending"]["order"])
+    tr.step_manage(at(clock))
+    assert ex.positions()[("XUSDT", "SHORT")] == pytest.approx(v["qty_f"] + g["qty_f"])
+    gs = [o for o in ex.algo.values() if o["type"] == "STOP_MARKET" and o["qty"] == pytest.approx(g["qty_f"])]
+    vs = [o for o in ex.algo.values() if o["type"] == "STOP_MARKET" and o["qty"] == pytest.approx(v["qty_f"])]
+    assert len(gs) == 1 and len(vs) == 1
+    sink.clear()
+    broker.audit(tr.store, tr.notify)                                  # 合併倉位 = 兩張單的總和：不是多出來的
+    assert not any("比這個程式記錄的多" in m for m in sink)
+    # 日線吞沒的止盈只平自己的數量，維加斯那張不受影響
+    ex.trigger("TAKE_PROFIT_MARKET", oid=g["tp_ids"][0])
+    tr.step_manage(at(clock))
+    assert g["id"] not in tr.store.positions and v["id"] in tr.store.positions
+    assert ex.positions()[("XUSDT", "SHORT")] == pytest.approx(v["qty_f"])
+    assert any(o["qty"] == pytest.approx(v["qty_f"]) for o in ex.algo.values() if o["type"] == "STOP_MARKET")
+    assert tr.store.ledger[-1]["strategy"] == "engulf_1d"
+    # 同一個幣已經有日線吞沒的單（或掛單）：新的日線吞沒訊號不做，維加斯不受影響
+    tr.try_open(engulf_signal(t=E_T + pd.Timedelta(days=1)))
+    tr.try_open(engulf_signal(t=E_T + pd.Timedelta(days=2)))
+    tr.try_open(engulf_signal(t=E_T + pd.Timedelta(days=3)))
+    assert sum(p["strategy"] == "engulf_1d" for p in tr.store.positions.values()) == 1
+    assert "已有" in sink[-1]
+
+
+def test_engulf_time_exit_closes_at_market_after_60_bars(tmp_path, monkeypatch):
+    ex = FakeExchange(price=100.0)
+    tr, sink, _, clock = make_engulf(tmp_path, ex, monkeypatch)
+    tr.try_open(engulf_signal())
+    pos = next(iter(tr.store.positions.values()))
+    ex.fill_limit(pos["pending"]["order"])
+    tr.step_manage(at(clock))
+    assert pos["exit_at"] > clock[0] * 1000 and ex.algo
+    clock[0] = pos["exit_at"] / 1000 - 5                                # 還沒到
+    tr.step_manage(at(clock))
+    assert tr.store.positions
+    ex.px = 98.0
+    clock[0] = pos["exit_at"] / 1000 + 5
+    tr.step_manage(at(clock))
+    assert not tr.store.positions and not ex.positions() and not ex.algo
+    row = tr.store.ledger[-1]
+    assert row["strategy"] == "engulf_1d" and row["r"] == pytest.approx(2 / 6, abs=0.05)
+    assert "已市價平倉" in sink[-1] or any("已市價平倉" in m for m in sink)
+
+
+def test_old_format_vegas_positions_still_load_and_are_managed(tmp_path):
+    """2026-11-23 以前的狀態檔：單沒有 strategy 欄、processed 只有 2H / 4H。"""
+    ex = FakeExchange(price=100.0)
+    cfg = Config(mode="testnet", state_dir=tmp_path, coins=["X"])
+    tr = Trader(cfg, ex, LiveBroker(ex, ex, cfg), Notifier("test", sink=[]), {"XUSDT": F})
+    tr.try_open(make_signal())
+    pid = next(iter(tr.store.positions))
+    assert pid == "XUSDT|2H|LONG|1792396800"
+    old_state = json.loads((tmp_path / "testnet.json").read_text())
+    old_state["positions"][pid].pop("strategy")                          # 舊版沒有這欄
+    old_state["ledger"].append({"id": "old", "symbol": "XUSDT", "interval": "4H", "side": "LONG", "opened": 1,
+                                "closed": 2, "pnl": 0.1, "r": 0.4, "pnl_source": "fills"})
+    old_state["processed"] = {"2H": 1, "4H": 2}
+    (tmp_path / "testnet.json").write_text(json.dumps(old_state))
+    sink = []
+    tr2 = Trader(cfg, ex, LiveBroker(ex, ex, cfg), Notifier("test", sink=sink), {"XUSDT": F})
+    assert set(tr2.store.positions) == {pid}
+    assert tr2.blocked(make_signal()) and not tr2.blocked(engulf_signal())    # 舊單算維加斯 2H
+    now = T0 + pd.Timedelta(minutes=5)
+    tr2.broker.reconcile(tr2.store, tr2.notify)
+    ex.trigger("TAKE_PROFIT_MARKET", 0)
+    tr2.step_manage(now)
+    assert tr2.store.positions[pid]["tps_hit"] == 1 and any("TP1 觸及" in m for m in sink)
+    assert "日線吞沒" not in " ".join(sink)                                   # 舊單的訊息照舊用 2H
+    ex.trigger("STOP_MARKET")
+    tr2.step_manage(now)
+    assert not tr2.store.positions and tr2.store.ledger[-1]["strategy"] == "vegas_trend"
+    assert tr2.due(pd.Timestamp("2026-11-21 00:00:20", tz="UTC")) == ["2H", "4H"]   # 日線沒有舊紀錄：只記時間、不補開單
+    assert tr2.store.processed["engulf_1d|1D"] == int(pd.Timestamp("2026-11-21", tz="UTC").timestamp() * 1000)
+
+
+def test_paper_engulf_fills_in_window_then_matches_tracker_and_expires_otherwise(tmp_path):
+    def run(rows, name):
+        ex = FakeExchange(df=candles(rows, start=E_T, freq="1D"))
+        cfg = Config(mode="paper", state_dir=tmp_path / name, coins=["X"])
+        sink = []
+        tr = Trader(cfg, ex, PaperBroker(ex, cfg), Notifier("paper", sink=sink), {"XUSDT": F})
+        sig = engulf_signal()
+        tr.try_open(sig)
+        assert next(iter(tr.store.positions.values()))["pending"]["resting"]
+        tr.step_manage(E_T + pd.Timedelta(days=len(rows)))
+        return tr, sink, sig
+
+    rows = [(98, 94, 96), (99, 95, 98), (101, 97, 100), (100, 92, 95)]     # 第 3 根碰到 100 成交、下一根到 94（1R）
+    tr, sink, sig = run(rows, "fill")
+    expect = track(sig, candles(rows, start=E_T, freq="1D"), 0.0005)
+    assert expect.status == "CLOSED"
+    row = tr.store.ledger[-1]
+    assert row["strategy"] == "engulf_1d" and row["pnl"] == pytest.approx(expect.realized_r * 0.05 * 6)   # 紙上權益 100U：最小量 0.05
+    assert any("掛單成交" in m for m in sink)
+    miss = [(98, 94, 96), (99, 95, 98), (99, 95, 97), (101, 96, 100)]      # 第 4 根才碰到：超過 3 根，不成交
+    tr, sink, _ = run(miss, "miss")
+    assert not tr.store.positions and not tr.store.ledger and any("沒成交" in m for m in sink)
+
+
+def test_feed_and_report_carry_strategy_with_vegas_default(tmp_path, monkeypatch):
+    import sys
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1] / "deploy"))
+    import trader_feed
+    monkeypatch.setattr(trader_feed, "mark_prices", lambda: {})
+    from research.trader_report import build, to_md
+    st = {"positions": {"a": {"id": "a", "symbol": "XUSDT", "interval": "2H", "side": "LONG", "entry": 1.0, "stop": 0.9,
+                              "tps": [1.1], "qty_f": 1.0, "opened": 1, "tps_hit": 0},
+                        "b": {"id": "b", "symbol": "XUSDT", "interval": "1D", "side": "SHORT", "entry": 1.0, "stop": 1.1,
+                              "tps": [0.9], "qty_f": 0.0, "opened": 1, "strategy": "engulf_1d", "pending": {"resting": True}}},
+          "ledger": [{"id": "o", "symbol": "XUSDT", "interval": "4H", "side": "LONG", "opened": 1, "closed": 2,
+                      "pnl": 0.1, "r": 0.4},
+                     {"id": "n", "symbol": "XUSDT", "interval": "1D", "side": "SHORT", "opened": 1, "closed": 2,
+                      "pnl": -0.2, "r": -1.0, "strategy": "engulf_1d"}], "processed": {}}
+    (tmp_path / "paper.json").write_text(json.dumps(st))
+    book = trader_feed.build(tmp_path)["books"]["paper"]
+    assert [x["strategy"] for x in book["ledger"]] == ["vegas_trend", "engulf_1d"]
+    assert {p["id"]: p["strategy"] for p in book["positions"]} == {"a": "vegas_trend", "b": "engulf_1d"}
+    assert next(p for p in book["positions"] if p["id"] == "b")["pending"] is True
+    rep = build({"generated": 1e9, "books": {"paper": {**book, "updated": 1e9}}}, "all", 1e9)
+    by = rep["books"]["paper"]["by_strategy"]
+    assert by["vegas_trend"]["all_time"]["trades"] == 1 and by["engulf_1d"]["all_time"]["mean_r"] == -1.0
+    assert "engulf_1d" in to_md(rep)

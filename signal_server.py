@@ -78,9 +78,9 @@ def main() -> int:
     p = argparse.ArgumentParser(description="交易訊號網頁")
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=8000)
-    p.add_argument("--strategies", nargs="+", default=["vegas_trend"], choices=sorted(signals.REGISTRY))
-    p.add_argument("--intervals", nargs="+", default=["4H", "2H"],
-                   help="預設看 4H 和 2H")
+    p.add_argument("--strategies", nargs="+", default=["vegas_trend", "engulf_1d"], choices=sorted(signals.REGISTRY))
+    p.add_argument("--intervals", nargs="+", default=["4H", "2H", "1D"],
+                   help="預設看 4H、2H（維加斯）和 1D（日線吞沒）")
     p.add_argument("--symbols", nargs="*", help="預設：市值前 100 名裡幣安有合約的幣（例如 BTC_USDT_PERP）")
     p.add_argument("--keep-days", type=float, default=7, help="顯示最近幾天的訊號")
     p.add_argument("--every", type=float, default=120, help="每幾秒重新掃描一次")

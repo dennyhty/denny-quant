@@ -23,7 +23,7 @@ import requests
 
 MAINNET = "https://fapi.binance.com"
 TESTNET = "https://testnet.binancefuture.com"
-INTERVALS = {"2H": "2h", "4H": "4h"}
+INTERVALS = {"2H": "2h", "4H": "4h", "1D": "1d"}
 
 
 def clean_id(client_id: str | None) -> str | None:

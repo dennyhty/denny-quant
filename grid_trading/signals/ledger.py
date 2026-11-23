@@ -14,6 +14,8 @@ import pandas as pd
 from .strategy import Signal
 from .tracker import track
 
+ENDED = ("CLOSED", "EXPIRED")  # 限價單沒成交取消（EXPIRED）也算結束，但不算一筆交易
+
 FIELDS = ("id", "symbol", "interval", "strategy", "market", "side", "time", "price", "sl", "tps")
 
 
@@ -42,12 +44,12 @@ def update(ledger: list[dict], signals: list[dict], candles: Callable[[str, str]
     seen = set()
     for s in signals:
         old = book.get(s["id"])
-        if old and old["status"] == "CLOSED":
+        if old and old["status"] in ENDED:
             continue  # 已結束的不再改
         book[s["id"]] = entry_from(s)
         seen.add(s["id"])
     for e in book.values():
-        if e["status"] == "CLOSED" or e["id"] in seen:
+        if e["status"] in ENDED or e["id"] in seen:
             continue
         df = candles(e["symbol"], e["interval"])
         if df is None or df.empty:
@@ -68,8 +70,10 @@ def summary(ledger: list[dict]) -> dict:
         if e.get("strict_rsi") is not None:
             groups.append("strict" if e["strict_rsi"] else "excluded")
         for name in groups:
-            b = g.setdefault(name, {"trades": 0, "wins": 0, "sum_r": 0.0, "open": 0})
-            if e["status"] == "CLOSED":
+            b = g.setdefault(name, {"trades": 0, "wins": 0, "sum_r": 0.0, "open": 0, "expired": 0})
+            if e["status"] == "EXPIRED":
+                b["expired"] += 1  # 掛單沒成交：不算交易、也不算持倉中
+            elif e["status"] == "CLOSED":
                 b["trades"] += 1
                 b["wins"] += e["r"] > 0
                 b["sum_r"] += e["r"]

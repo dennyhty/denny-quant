@@ -49,6 +49,8 @@ class Strategy:
     min_bars = 200
     # 觀察組之類的標籤，會加在網站卡片和推播文字前面；空字串就不加
     tag = ""
+    # 通知文字裡的策略簡稱（例如「日線吞沒」）；空字串就不加（維加斯不加，文字照舊）
+    short = ""
     # 只在某些類別當觀察組時用，例如 {"stock": "美股觀察組"}；沒列到的類別用 tag
     market_tags: dict[str, str] = {}
     # 只在這些週期 / 類別上跑（engine 的週期寫法，例如 "4H"；類別 crypto/stock/commodity），None 表示全部
