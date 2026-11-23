@@ -1,4 +1,10 @@
-"""自動交易主程式：每根 2H / 4H 收盤後找新訊號、開倉；平時管理已開的倉位。
+"""自動交易主程式：每根 2H / 4H（維加斯）和 1D（日線吞沒）收盤後找新訊號、開倉；平時管理已開的倉位。
+
+兩個策略（Denny 2026-11-23 起）：
+- vegas_trend：2H、4H，掛單在訊號收盤價、逾時改市價，止盈 1R/3R/5R（下面的規則）。
+- engulf_1d：日線 EMA8/20 剛交叉 + 吞沒 K，GTC 限價單掛在吞沒 K 實體一半，最多等到訊號收盤後 3 天，沒成交就取消
+  （不追市價）；成交後掛止損（1.5 ATR，從掛單價算）和單一 1R 止盈（全平），沒有保本和追蹤，60 根日線沒結束就市價平倉。
+  和維加斯各自獨立（同幣同向兩邊都可以有單，在幣安上合成同一個倉位，各用自己的數量）。
 
 進場（和網站的實盤維加斯一樣）：
 - 只看剛收盤那一根的訊號；程式停機期間錯過的舊訊號不補做。
@@ -45,8 +51,11 @@ from .binance import DEAD, POST_ONLY_REJECT, BinanceError, BinanceFutures, Order
 from .risk import RiskRules, can_open, risk_multiplier
 from .sizing import Filters, fmt, plan_size, split
 
-BAR = {"2H": pd.Timedelta(hours=2), "4H": pd.Timedelta(hours=4)}
-ORDER = ("2H", "4H")  # 同一個時間點兩個週期都有訊號時，2H 先做
+BAR = {"2H": pd.Timedelta(hours=2), "4H": pd.Timedelta(hours=4), "1D": pd.Timedelta(days=1)}
+VEGAS, ENGULF = "vegas_trend", "engulf_1d"
+# 要掃描的（策略, 週期），同一個時間點多個都有訊號時照這個順序（2H 先做）
+SLOTS = ((VEGAS, "2H"), (VEGAS, "4H"), (ENGULF, "1D"))
+STRATEGY_TEXT = {ENGULF: "日線吞沒"}  # 推播文字裡取代週期的名稱；維加斯沒列，照舊顯示 2H / 4H
 KLINE_LIMIT = 1500  # 幣安單次 K 線上限；持倉沒有時間上限，抓的根數要夠涵蓋持倉期間
 LABEL = {"paper": "幣安紙上交易", "testnet": "幣安測試網", "live": "幣安實盤"}
 AUDIT_EVERY = 3600.0  # 多久比對一次交易所倉位和程式記錄（秒）；一次只用一個 positions 請求
@@ -82,6 +91,9 @@ class Config:
     # 研究（report_vegas_improve_20261115.md）：5,000 萬 U 以下的幣扣成本後幾乎不賺，2026 年的虧損幾乎都在這些幣
     # 2026-11-21 Denny 決定門檻降到 3,000 萬（binance_trader.py 預設）：訊號多約 25%，每筆 R 略低（report_universe_buckets_20261120.md 補充）
     min_adv: float = 0.0
+    # 日線吞沒（engulf_1d）：開關和自己的流動性門檻（0 = 不設；--min-adv 只管維加斯）
+    engulf: bool = True
+    engulf_min_adv: float = 0.0
     # 掛單（maker）：進場改掛限價單在訊號收盤價（只掛單，逾時沒成交完改市價追），止盈改掛限價單。
     # 研究：成本吃掉一半的優勢；訊號收盤後價格 98% 會回到收盤價，掛單每筆約省 0.03R
     maker_entry: bool = False
@@ -103,6 +115,25 @@ def daily_turnover(df: pd.DataFrame, interval: str, days: int = 30) -> float | N
         return None
     tail = df.iloc[-n:]
     return float((tail["volume"] * tail["close"]).sum() / days)
+
+
+def slot_key(strategy: str, interval: str) -> str:
+    """狀態檔 processed 的鍵：維加斯沿用週期名（"2H"），舊狀態檔照樣能讀；其他策略加上策略名。"""
+    return interval if strategy == VEGAS else f"{strategy}|{interval}"
+
+
+def _slot(strategy: str, interval: str) -> str:
+    return STRATEGY_TEXT.get(strategy, interval)
+
+
+def _pslot(pos: dict) -> str:
+    return _slot(pos.get("strategy", VEGAS), pos["interval"])
+
+
+def pos_id(sig: Signal) -> str:
+    """持倉 id。維加斯維持舊格式（舊狀態檔的單照樣對得上），其他策略後面加策略名，不會和維加斯撞。"""
+    base = f"{sig.symbol}|{sig.interval}|{sig.side}|{int(sig.time.timestamp())}"
+    return base if sig.strategy == VEGAS else f"{base}|{sig.strategy}"
 
 
 def signal_from(d: dict) -> Signal:
@@ -320,7 +351,8 @@ class Trader:
         self._loop_out = Outage("主迴圈無法正常執行", notify)
         self.last_loop: float | None = None
         self.last_manage_ok: float | None = None
-        self.strategy = get("vegas_trend")
+        self.slots = [(n, iv) for n, iv in SLOTS if cfg.engulf or n != ENGULF]
+        self.strategies = {n: get(n) for n, _ in self.slots}
         self.symbols = {}
         self._coins_month: str | None = None
         self._coins_warned: str | None = None
@@ -399,19 +431,21 @@ class Trader:
         return (d / "pause").exists() or (d / f"pause-{self.cfg.mode}").exists()
 
     def due(self, now: pd.Timestamp) -> list[str]:
-        """這次要處理的週期：收盤時間比上次處理的新。第一次啟動只記下時間、不開單（避免開到舊訊號）。"""
+        """這次要處理的（策略, 週期）的 processed 鍵（維加斯就是週期名）：收盤時間比上次處理的新。
+        第一次啟動只記下時間、不開單（避免開到舊訊號）。"""
         out = []
-        for iv in ORDER:
+        for name, iv in self.slots:
+            key = slot_key(name, iv)
             t = int(bar_close(now, iv).timestamp() * 1000)
-            last = self.store.processed.get(iv)
+            last = self.store.processed.get(key)
             if last is None:
-                self.store.processed[iv] = t
+                self.store.processed[key] = t
             elif t > last:
-                out.append(iv)
+                out.append(key)
         self.store.save()
         return out
 
-    def find_signals(self, interval: str, close: pd.Timestamp) -> list[Signal]:
+    def find_signals(self, interval: str, close: pd.Timestamp, strategy: str = VEGAS) -> list[Signal]:
         if self.cfg.auto_coins:
             self.refresh_coins()
         def one(sym):
@@ -423,7 +457,8 @@ class Trader:
             closed = df[df["time"] + BAR[interval] <= close].reset_index(drop=True)
             if len(closed) < 250 or closed["time"].iloc[-1] + BAR[interval] != close:
                 return []
-            sigs = [s for s in self.strategy.scan(closed, sym, interval, start=len(closed) - 1) if s.time == close]
+            sigs = [s for s in self.strategies[strategy].scan(closed, sym, interval, start=len(closed) - 1)
+                    if s.time == close]
             if sigs:
                 adv = daily_turnover(closed, interval)
                 for s in sigs:
@@ -441,7 +476,7 @@ class Trader:
             failed = [sym for sym, r in res if r is None]
         if failed:  # 還是抓不到：這根照樣記成已處理（不無限重掃），但要讓人知道漏了誰
             names = "、".join(_pair(x) for x in failed[:5]) + ("…" if len(failed) > 5 else "")
-            self.notify(f"{interval} 掃描有 {len(failed)} 個幣抓不到 K 線，這根的訊號可能漏掉：{names}")
+            self.notify(f"{_slot(strategy, interval)} 掃描有 {len(failed)} 個幣抓不到 K 線，這根的訊號可能漏掉：{names}")
         found = [s for _, batch in res for s in batch or []]
         return sorted(found, key=lambda s: s.symbol)
 
@@ -449,29 +484,32 @@ class Trader:
         for p in self.store.positions.values():
             if p["symbol"] != sig.symbol:
                 continue
-            if p["interval"] == sig.interval:
-                return f"{_pair(sig.symbol)} {sig.interval} 已有{_side_text(p['side'])}單"
+            if p["interval"] == sig.interval and p.get("strategy", VEGAS) == sig.strategy:
+                return f"{_pair(sig.symbol)} {_slot(sig.strategy, sig.interval)} 已有{_side_text(p['side'])}單"
         return ""
 
     def step_entries(self, now: pd.Timestamp) -> None:
-        for iv in self.due(now):
+        by_key = {slot_key(n, iv): (n, iv) for n, iv in self.slots}
+        for key in self.due(now):
+            name, iv = by_key[key]
             close = bar_close(now, iv)
-            sigs = self.find_signals(iv, close)
+            sigs = self.find_signals(iv, close, name)
             # 沒訊號也印一行，看紀錄就知道每根收盤都有掃（不推 Telegram）
             print(time.strftime("%Y-%m-%d %H:%M:%S"),
-                  f"{iv} 收盤 {close:%m-%d %H:%M} UTC 掃描完成：{len(sigs)} 個訊號，持倉 {len(self.store.positions)} 張",
+                  f"{_slot(name, iv)} 收盤 {close:%m-%d %H:%M} UTC 掃描完成：{len(sigs)} 個訊號，持倉 {len(self.store.positions)} 張",
                   flush=True)
             for sig in sigs:
                 self.try_open(sig)
-            self.store.processed[iv] = int(close.timestamp() * 1000)
+            self.store.processed[key] = int(close.timestamp() * 1000)
             self.store.save()
 
     def try_open(self, sig: Signal) -> None:
-        head = f"{_pair(sig.symbol)} {sig.interval} {_side_text(sig.side)}訊號 @ {sig.price:.6g}"
+        head = f"{_pair(sig.symbol)} {_slot(sig.strategy, sig.interval)} {_side_text(sig.side)}訊號 @ {sig.price:.6g}"
         reason = self.blocked(sig)
         adv = (sig.info or {}).get("adv_usdt")
-        if not reason and self.cfg.min_adv > 0 and adv is not None and adv < self.cfg.min_adv:
-            reason = f"近 30 天日均成交額 {adv / 1e4:,.0f} 萬 U，低於門檻 {self.cfg.min_adv / 1e4:,.0f} 萬 U"
+        min_adv = self.cfg.engulf_min_adv if sig.strategy == ENGULF else self.cfg.min_adv
+        if not reason and min_adv > 0 and adv is not None and adv < min_adv:
+            reason = f"近 30 天日均成交額 {adv / 1e4:,.0f} 萬 U，低於門檻 {min_adv / 1e4:,.0f} 萬 U"
         if not reason and self.paused():
             reason = f"已暫停開新倉（pause 或 pause-{self.cfg.mode} 檔存在）"
         if not reason and not can_open(len(self.store.positions), self.cfg.rules):
@@ -506,7 +544,11 @@ class Trader:
         self.store.save()
         extra = "（風險減半）" if mult < 1 else ""
         extra += f"（最小下單量，實際風險 {size.risk_frac:.2%}）" if size.bumped else ""
-        if pos.get("pending"):
+        if pos.get("pending") and pos["pending"].get("resting"):
+            p = pos["pending"]
+            self.notify(f"{head}，已掛限價單 {p['qty']} @ {p['price']:.6g}，止損 {sig.sl:.6g}，"
+                        f"3 天內沒成交就取消（不追市價）{extra}")
+        elif pos.get("pending"):
             p = pos["pending"]
             self.notify(f"{head}，已掛限價單 {p['qty']} @ {p['price']:.6g}，"
                         f"{self.cfg.entry_wait / 60:.0f} 分鐘內沒成交完的部分改市價{extra}")
@@ -514,7 +556,7 @@ class Trader:
             self.notify(f"{head}，已開倉 {pos['qty']} @ {pos['entry']:.6g}，止損 {pos['stop']:.6g}，"
                         f"TP {' / '.join(f'{t:.6g}' for t in pos['tps'])}{extra}")
         if pos.get("warn"):  # 例如槓桿調不下來
-            self.notify(f"{_pair(pos['symbol'])} {pos['interval']}：{pos.pop('warn')}")
+            self.notify(f"{_pair(pos['symbol'])} {_pslot(pos)}：{pos.pop('warn')}")
             self.store.save()
 
     # ---------- 持倉管理 ----------
@@ -552,7 +594,7 @@ class Trader:
                     print(f"持倉管理暫停：{e}", flush=True)
                     self._manage_out.fail(self._ban_text(t, e), t)
                     return
-                msg = f"{_pair(pos['symbol'])} {pos['interval']} 管理失敗：{e}"
+                msg = f"{_pair(pos['symbol'])} {_pslot(pos)} 管理失敗：{e}"
                 if isinstance(e, BinanceError):
                     msg += f"（程式記錄剩 {pos.get('remaining'):g}，止損 {pos.get('stop'):.6g}）"
                 failed = failed or msg
@@ -562,7 +604,7 @@ class Trader:
                 self.store.save()
                 continue
             if pos.get("warn"):
-                self.notify(f"{_pair(pos['symbol'])} {pos['interval']}：{pos.pop('warn')}")
+                self.notify(f"{_pair(pos['symbol'])} {_pslot(pos)}：{pos.pop('warn')}")
             pos.pop("last_error", None)  # 這輪沒出錯，之後同樣的錯誤再出現要再通知一次
             if pos.get("drop"):  # 限價進場沒做成（沒成交、或成交後就平掉了）：不記帳本
                 del self.store.positions[pid]
@@ -571,7 +613,7 @@ class Trader:
             if result is not None:  # 已平倉：result 是實現損益（USDT）
                 r = result / pos["base_usdt"] if pos.get("base_usdt") else 0.0
                 row = {"id": pid, "symbol": pos["symbol"], "interval": pos["interval"],
-                       "side": pos["side"], "opened": pos["opened"],
+                       "side": pos["side"], "opened": pos["opened"], "strategy": pos.get("strategy", VEGAS),
                        "closed": int(now.timestamp() * 1000), "pnl": result, "r": r,
                        "pnl_source": pos.get("pnl_source", "estimate")}
                 if "pnl_est" in pos:  # 用成交明細算的，也留著估算值方便對照
@@ -579,7 +621,7 @@ class Trader:
                 self.store.ledger.append(row)
                 del self.store.positions[pid]
                 cum = sum(x["r"] for x in self.store.ledger)
-                self.notify(f"{_pair(pos['symbol'])} {pos['interval']} {_side_text(pos['side'])}已平倉："
+                self.notify(f"{_pair(pos['symbol'])} {_pslot(pos)} {_side_text(pos['side'])}已平倉："
                             f"{result:+.4f} USDT（{r:+.2f}R），累計 {cum:+.2f}R")
             self.store.save()
         if failed:
@@ -731,12 +773,16 @@ class PaperBroker:
 
     def open(self, sig: Signal, size, f: Filters, store: Store) -> dict:
         qty = size.steps * f.step
-        return {"id": f"{sig.symbol}|{sig.interval}|{sig.side}|{int(sig.time.timestamp())}",
-                "symbol": sig.symbol, "interval": sig.interval, "side": sig.side,
-                "signal": sig.to_dict(), "qty": fmt(qty, f.step), "qty_f": qty,
-                "entry": sig.price, "stop": sig.sl, "tps": list(sig.tps),
-                "risk_usdt": qty * abs(sig.price - sig.sl), "events": 0,
-                "opened": int(sig.time.timestamp() * 1000)}
+        pos = {"id": pos_id(sig), "strategy": sig.strategy,
+               "symbol": sig.symbol, "interval": sig.interval, "side": sig.side,
+               "signal": sig.to_dict(), "qty": fmt(qty, f.step), "qty_f": qty,
+               "entry": sig.price, "stop": sig.sl, "tps": list(sig.tps),
+               "risk_usdt": qty * abs(sig.price - sig.sl), "events": 0,
+               "opened": int(sig.time.timestamp() * 1000)}
+        if sig.exit.get("limit"):  # 限價進場：碰到掛單價才算成交（tracker 判斷），沒成交就取消
+            pos["pending"] = {"resting": True, "price": sig.price, "qty": pos["qty"], "qty_f": qty,
+                              "deadline": _limit_deadline(sig)}
+        return pos
 
     def manage(self, pos: dict, now: pd.Timestamp, notify, siblings=()) -> float | None:
         if now.timestamp() - pos.get("checked", 0) < self.cfg.paper_check:
@@ -746,16 +792,29 @@ class PaperBroker:
         df = self.data.klines(sig.symbol, sig.interval, KLINE_LIMIT)
         res = track(sig, df[df["time"] <= now], self.cfg.fee)
         for e in res.events[pos["events"]:]:
-            if e.kind in ("TP1", "TP2", "TP3", "STOP_MOVED", "TRAIL_MOVED"):
-                notify(f"{_pair(sig.symbol)} {sig.interval} {_side_text(sig.side)}：{e.text}")
+            if e.kind in ("FILLED", "EXPIRED", "TP1", "TP2", "TP3", "STOP_MOVED", "TRAIL_MOVED"):
+                notify(f"{_pair(sig.symbol)} {_slot(sig.strategy, sig.interval)} {_side_text(sig.side)}：{e.text}")
         pos["events"] = len(res.events)
         pos["stop"] = res.stop
+        if res.status == "PENDING":
+            return None
+        if res.status == "EXPIRED":  # 沒成交：不記帳本
+            pos["drop"] = True
+            return None
+        if pos.get("pending"):  # 成交了
+            pos.pop("pending")
+            pos["opened"] = int(res.filled_at.timestamp() * 1000)
         if res.status == "CLOSED":
             return res.realized_r * pos["risk_usdt"]
         return None
 
 
 # ---------- 測試網 / 實盤 ----------
+def _limit_deadline(sig: Signal) -> float:
+    """限價進場最晚等到什麼時候（Unix 秒）：訊號收盤後 fill_bars 根（日線吞沒 = 3 天）。"""
+    return sig.time.timestamp() + int(sig.exit.get("fill_bars") or 0) * float(sig.exit.get("bar_ms") or 0) / 1000
+
+
 def client_tag(sig: Signal) -> str:
     """掛單用的 client id 前綴。幣安要求同一帳戶內不能重複，所以要帶幣名（同一根 K 線常有好幾個幣同時出訊號）；
     只能用 [.A-Za-z0-9:/_-]，最長 36 字元，後面還要接 e / s12 / t1 等尾巴。
@@ -763,7 +822,7 @@ def client_tag(sig: Signal) -> str:
     name = sig.symbol
     if not re.fullmatch(r"[A-Za-z0-9]+", name) or len(name) > 14:
         name = hashlib.md5(sig.symbol.encode()).hexdigest()[:10]
-    return f"v{sig.interval}{int(sig.time.timestamp())}{sig.side[0]}{name}"
+    return f"{'v' if sig.strategy == VEGAS else 'g'}{sig.interval}{int(sig.time.timestamp())}{sig.side[0]}{name}"
 
 
 class EntryUnknown(RuntimeError):
@@ -947,25 +1006,31 @@ class LiveBroker:
         buy = "BUY" if d > 0 else "SELL"
         tag = client_tag(sig)
         qty = fmt(size.steps * f.step, f.step)
-        if self.cfg.maker_entry:
+        resting = bool(sig.exit.get("limit"))  # 日線吞沒：一般限價單（GTC）放著等，不追市價
+        if resting or self.cfg.maker_entry:
             # 做多往下、做空往上取到價格單位，掛的價格不會比訊號價差
             ticks = sig.price / f.tick
             px = (math.floor(ticks + 1e-9) if d > 0 else math.ceil(ticks - 1e-9)) * f.tick
             cid = f"{tag}l"
             try:
-                o = self.client.limit_order(sig.symbol, buy, ps, qty, fmt(px, f.tick), cid, tif="GTX")
+                o = self.client.limit_order(sig.symbol, buy, ps, qty, fmt(px, f.tick), cid,
+                                            tif="GTC" if resting else "GTX")
             except BinanceError as e:
-                if e.code != POST_ONLY_REJECT:
+                if e.code != POST_ONLY_REJECT or resting:
                     raise
                 o = None
             except OrderUnknown as e:
                 raise EntryUnknown(f"{e}。交易所上可能有 {sig.symbol} {ps} 的限價進場單或倉位，"
                                    f"請到幣安檢查（client id {cid}）") from e
             st = str((o or {}).get("status") or "").upper()
+            if resting and o is not None and st in DEAD and float(o.get("executedQty") or 0) <= 0:
+                raise RuntimeError(f"限價單被幣安取消或拒絕（{st}）")
             if o is not None and not (st in DEAD and float(o.get("executedQty") or 0) <= 0):
                 pos = self._new_pos(sig, f, tag, px, warn)
                 pos["pending"] = {"order": o.get("orderId"), "cid": cid, "price": px, "qty": qty,
                                   "qty_f": float(qty), "deadline": time.time() + self.cfg.entry_wait}
+                if resting:
+                    pos["pending"].update({"resting": True, "deadline": _limit_deadline(sig)})
                 if st == "FILLED":  # 掛上去就成交了（很少見）：直接掛止損止盈
                     self._finish_entry(pos, o, sig, f, None)
                 return pos
@@ -995,7 +1060,7 @@ class LiveBroker:
         d = sig.direction
         risk = abs(sig.price - sig.sl) / sig.price * entry
         r_mult = [abs(t - sig.price) / abs(sig.price - sig.sl) for t in sig.tps]
-        pos = {"id": f"{sig.symbol}|{sig.interval}|{sig.side}|{int(sig.time.timestamp())}",
+        pos = {"id": pos_id(sig), "strategy": sig.strategy,
                "symbol": sig.symbol, "interval": sig.interval, "side": sig.side, "signal": sig.to_dict(),
                "qty": fmt(0, f.step), "qty_f": 0.0, "remaining": 0.0, "fills": [],
                "step": f.step, "tick": f.tick, "slices": [],
@@ -1026,6 +1091,10 @@ class LiveBroker:
                     "risk_usdt": qty * risk,
                     "entry_orders": [x for x in order_ids if x is not None]})
         pos["entry_order"] = pos["entry_orders"][0] if pos["entry_orders"] else None
+        if sig.exit.get("max_bars"):
+            # 成交那根日線之後第 max_bars 根收盤（= 成交日 + max_bars + 1 天的 00:00 UTC）還沒出場就市價平倉，和研究的 60 根一樣
+            bar_ms = int(sig.exit.get("bar_ms") or 86_400_000)
+            pos["exit_at"] = (int(time.time() * 1000) // bar_ms + int(sig.exit["max_bars"]) + 1) * bar_ms
         tag, sell = pos["tag"], pos["close_side"]
         try:
             pos["stop_id"] = self._place_stop(pos, stop, 0)
@@ -1077,7 +1146,7 @@ class LiveBroker:
         p = pos["pending"]
         sig = signal_from(pos["signal"])
         f = Filters(step=pos["step"], min_qty=0.0, max_qty=1e18, tick=pos["tick"], min_notional=0.0)
-        name = f"{_pair(pos['symbol'])} {pos['interval']} {_side_text(pos['side'])}"
+        name = f"{_pair(pos['symbol'])} {_pslot(pos)} {_side_text(pos['side'])}"
         if p.get("canceled"):  # 上一輪已經取消、市價補單沒完成：用取消時的結果接著做
             o = p["canceled"]
         else:
@@ -1099,7 +1168,12 @@ class LiveBroker:
         done = float(o.get("executedQty") or 0)
         rest_steps = int(round((p["qty_f"] - done) / pos["step"]))
         chase = None
-        if rest_steps > 0:
+        if rest_steps > 0 and p.get("resting"):  # 日線吞沒：不追市價，沒成交的部分就取消
+            if done <= 0:
+                pos["drop"] = True
+                notify(f"{name}：限價單 {p['price']:.6g} 沒有成交（已取消），這張不做")
+                return
+        elif rest_steps > 0:
             buy = "BUY" if sig.direction > 0 else "SELL"
             try:
                 # check_first：上一輪送過但結果不明的話先查單，不重複下單
@@ -1129,7 +1203,8 @@ class LiveBroker:
             pos["drop"] = True
             notify(f"{name}：進場成交後{e}")
             return
-        how = "全部掛單成交" if chase is None else f"掛單成交 {done:g}，其餘市價"
+        how = ("全部掛單成交" if rest_steps <= 0 else f"掛單成交 {done:g}，其餘取消") if p.get("resting") else \
+            ("全部掛單成交" if chase is None else f"掛單成交 {done:g}，其餘市價")
         notify(f"{name}：進場 {pos['qty']} @ {pos['entry']:.6g}（{how}），止損 {pos['stop']:.6g}，"
                f"TP {' / '.join(f'{t:.6g}' for t in pos['tps'])}")
 
@@ -1304,7 +1379,7 @@ class LiveBroker:
             live = None
         if live is None:
             for s in others:
-                s["warn"] = (f"同方向的 {pos['interval']} 單出場時可能多平了最多 {extra:g}，無法確認，"
+                s["warn"] = (f"同方向的 {_pslot(pos)} 單出場時可能多平了最多 {extra:g}，無法確認，"
                              f"請到幣安核對倉位（程式記錄剩 {s['remaining']:g}）")
             return
         short = min(extra, sum(s["remaining"] for s in others) - live)
@@ -1317,14 +1392,14 @@ class LiveBroker:
             s["fills"].append([take, price])
             s["remaining"] = max(0.0, s["remaining"] - take)
             short -= take
-            s["warn"] = (f"同方向的 {pos['interval']} 單出場時多平了 {take:g}（交易所上只剩 {live:g}），"
+            s["warn"] = (f"同方向的 {_pslot(pos)} 單出場時多平了 {take:g}（交易所上只剩 {live:g}），"
                          f"已從這張單扣掉、照 {price:.6g} 記帳，止損數量跟著改小")
 
     def manage(self, pos: dict, now: pd.Timestamp, notify, siblings=()) -> float | None:
         if pos.get("pending"):  # 限價進場還沒結束
             self.manage_pending(pos, notify)
             return None
-        name = f"{_pair(pos['symbol'])} {pos['interval']} {_side_text(pos['side'])}"
+        name = f"{_pair(pos['symbol'])} {_pslot(pos)} {_side_text(pos['side'])}"
         if pos["remaining"] <= pos["step"] / 2:  # 上一輪已經平掉（例如移止損失敗時市價平倉）
             return self.finish(pos)
         st, stop_price = self.status(pos, pos.get("stop_id"))
@@ -1341,7 +1416,8 @@ class LiveBroker:
         stop_missing, stop_version = st == "gone", pos.get("stop_version", 0)
         placed = pos.get("stop_qty", pos["remaining"])  # 舊狀態檔沒有 stop_qty：止損是用目前剩餘數量掛的
         d = 1 if pos["side"] == LONG else -1
-        while pos["tps_hit"] < 3:
+        n_tps = len(pos["tps"])  # 維加斯 3 個；日線吞沒只有 1 個（1R 全平）
+        while pos["tps_hit"] < n_tps:
             n = pos["tps_hit"]
             st, price = self.tp_status(pos, pos["tp_ids"][n])
             if st == "pending" and stop_filled:  # 止盈也剛觸發：等它有結果再一起結算
@@ -1353,7 +1429,7 @@ class LiveBroker:
             pos["remaining"] = max(0.0, pos["remaining"] - q)
             pos["tps_hit"] += 1
             notify(f"{name}：TP{n + 1} 觸及 {pos['tps'][n]:.6g}")
-            if stop_filled:  # 止損已經成交，不必再移
+            if stop_filled or pos["remaining"] <= pos["step"] / 2:  # 止損已經成交 / 已經全平：不必再移止損
                 continue
             if n == 0:
                 self.move_stop(pos, pos["be"])
@@ -1380,6 +1456,12 @@ class LiveBroker:
                 self._absorb_excess(pos, extra, stop_price, siblings)
             return self.finish(pos)
         if pos["remaining"] <= pos["step"] / 2:
+            return self.finish(pos)
+        if pos.get("exit_at") and now.timestamp() * 1000 >= pos["exit_at"]:
+            # 時間出場（日線吞沒，成交後 60 根日線）：先撤止損、止盈（同幣同向還有別張單時，留著會平到它），再市價平掉剩下的
+            self._cancel_orders(pos)
+            self._close_rest(pos, "z")
+            notify(f"{name}：持倉已滿 {pos['signal']['exit'].get('max_bars', '')} 根 K 線，已市價平倉")
             return self.finish(pos)
         # 止盈成交後移止損那一步若中途失敗（例如斷線），tps_hit 已經加上去、止損卻還在舊價位：每輪補移到該在的位置
         want = pos["be"] if pos["tps_hit"] == 1 else pos["tps"][0] if pos["tps_hit"] == 2 else None

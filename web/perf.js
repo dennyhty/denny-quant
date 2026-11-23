@@ -185,11 +185,15 @@
     }
   }
 
+  /** 非維加斯的單（日線吞沒）加一個策略標籤；舊紀錄沒有 strategy 欄，都是維加斯。 */
+  const STRAT_NAME = { engulf_1d: "日線吞沒" };
+  const stratChip = (x) => (STRAT_NAME[x.strategy] ? ` <span class="chip tag-chip">${h(STRAT_NAME[x.strategy])}</span>` : "");
+
   function openTable(open) {
     if (!open.length) return `<p class="muted">沒有持倉。</p>`;
     const rows = [...open].sort((a, b) => (b.opened || 0) - (a.opened || 0)).map((p) => `<tr>
-      <td><b>${h(coin(p.symbol))}</b> <span class="chip">${h(p.interval)}</span></td><td>${sideTag(p.side)}</td>
-      <td class="num">${num(p.entry, 6).replace(/\.?0+$/, "")}</td><td class="num">${num(p.stop, 6).replace(/\.?0+$/, "")}</td>
+      <td><b>${h(coin(p.symbol))}</b> <span class="chip">${h(p.interval)}</span>${stratChip(p)}</td><td>${sideTag(p.side)}</td>
+      <td class="num">${p.pending ? "掛單 " : ""}${num(p.entry, 6).replace(/\.?0+$/, "")}</td><td class="num">${num(p.stop, 6).replace(/\.?0+$/, "")}</td>
       <td>${p.tps_hit ? `TP${p.tps_hit}` : "—"}</td>
       <td class="num ${cls(p.r_est)}">${sgn(p.r_est, 2, "R")}</td><td class="muted">${p.opened ? tw(p.opened) : ""}</td></tr>`).join("");
     return `<div class="tbl"><table><thead><tr><th>幣</th><th>方向</th><th>進場</th><th>止損</th><th>已到</th><th>浮動</th><th>開倉</th></tr></thead>
@@ -198,7 +202,7 @@
 
   function closedTable(list) {
     if (!list.length) return `<p class="muted">還沒有平倉的單。</p>`;
-    const rows = list.map((x) => `<tr><td><b>${h(coin(x.symbol))}</b> <span class="chip">${h(x.interval)}</span></td><td>${sideTag(x.side)}</td>
+    const rows = list.map((x) => `<tr><td><b>${h(coin(x.symbol))}</b> <span class="chip">${h(x.interval)}</span>${stratChip(x)}</td><td>${sideTag(x.side)}</td>
       <td class="num ${cls(x.r)}">${sgn(x.r, 2, "R")}</td><td class="num ${cls(x.pnl)}">${sgn(x.pnl, 3)}</td>
       <td class="muted">${x.closed ? tw(x.closed) : ""}</td></tr>`).join("");
     return `<div class="tbl"><table><thead><tr><th>幣</th><th>方向</th><th>R</th><th>USDT</th><th>平倉</th></tr></thead>

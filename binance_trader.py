@@ -1,4 +1,4 @@
-"""幣安自動交易（實盤維加斯 4H + 2H）。要在美國以外、固定 IP 的主機上跑，安裝方法見 docs/binance_bot.md。
+"""幣安自動交易（實盤維加斯 4H + 2H，加上日線吞沒 1D）。要在美國以外、固定 IP 的主機上跑，安裝方法見 docs/binance_bot.md。
 
   python binance_trader.py --mode paper              # 紙上交易：不用金鑰，只記帳
   python binance_trader.py --mode testnet            # 測試網：要測試網的 BINANCE_API_KEY / BINANCE_API_SECRET
@@ -7,7 +7,8 @@
 選項：--risk 0.0025（每筆風險）、--max-risk 0.01（最小下單量造成的風險上限）、--leverage 5（逐倉）、
 --max-open 15（同時最多幾張）、--dd-half-r 20（回撤 20R 後風險減半）、--state-dir（狀態檔位置）、
 --no-stream（不開即時推送）、--poll-stream 300（推送正常時的輪詢間隔）、
---min-adv 3e7（近 30 天日均成交額低於 3,000 萬 U 的幣不做，0 = 不設）、
+--min-adv 3e7（維加斯：近 30 天日均成交額低於 3,000 萬 U 的幣不做，0 = 不設）、
+--no-engulf（關掉日線吞沒 engulf_1d，預設開）、--engulf-min-adv 0（日線吞沒自己的成交額門檻，預設不設）、
 --fixed-coins（用固定的舊名單，不每月更新市值前 100 名）、--entry-wait 600（限價進場最多等幾秒）、--taker（進場和止盈改回市價）。
 預設（2026-11-17 起）：進場掛限價單在訊號收盤價、逾時沒成交的部分改市價；止盈掛限價單；止損仍是市價條件單。
 --max-equity 300（資金上限：算倉位的權益最多當 300 U；也可設環境變數 TRADER_MAX_EQUITY，命令列優先）。
@@ -113,6 +114,10 @@ def main(argv: list[str]) -> int:
                     help="收盤後幾秒再掃描（預設：測試網、正式 15 秒，紙上 75 秒，和測試網錯開）")
     ap.add_argument("--min-adv", type=float, default=3e7,
                     help="近 30 天日均成交額（USDT）低於這個數字的幣不做（預設 3,000 萬，2026-11-21 起；0 = 不設門檻）")
+    ap.add_argument("--no-engulf", action="store_true",
+                    help="關掉日線吞沒策略（engulf_1d，1D 限價單掛 3 天）；預設開（2026-11-23 起）")
+    ap.add_argument("--engulf-min-adv", type=float, default=0.0,
+                    help="日線吞沒的成交額門檻（近 30 天日均，USDT）；預設 0 = 不設。--min-adv 只管維加斯")
     ap.add_argument("--fixed-coins", action="store_true",
                     help="用 grid_trading/universe.py 的固定名單，不每月從 CoinMarketCap 更新市值前 100 名")
     ap.add_argument("--entry-wait", type=float, default=600.0,
@@ -150,7 +155,8 @@ def main(argv: list[str]) -> int:
         return preflight(venue, a.mode, a.risk, max_equity)
     cfg = Config(mode=a.mode, risk=a.risk, max_risk=a.max_risk, leverage=a.leverage, paper_equity=a.paper_equity,
                  rules=RiskRules(max_open=a.max_open, dd_half_r=a.dd_half_r), state_dir=a.state_dir,
-                 poll=a.poll, poll_stream=a.poll_stream, min_adv=a.min_adv, entry_wait=a.entry_wait, auto_coins=not a.fixed_coins,
+                 poll=a.poll, poll_stream=a.poll_stream, min_adv=a.min_adv,
+                 engulf=not a.no_engulf, engulf_min_adv=a.engulf_min_adv, entry_wait=a.entry_wait, auto_coins=not a.fixed_coins,
                  max_equity=max_equity, maker_entry=not a.taker, maker_tp=not a.taker, scan_delay=(75.0 if a.mode == "paper" else 15.0) if a.scan_delay is None else a.scan_delay)
     data = BinanceFutures(MAINNET)
     stream = None
