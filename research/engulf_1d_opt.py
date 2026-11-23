@@ -47,9 +47,17 @@ def _features(df):
     return {"vol_ok": v > vavg, "body_ok": body >= 0.5 * df["atr"].to_numpy()}
 
 
-def export(max_syms: int = 0) -> pd.DataFrame:
+def export(max_syms: int = 0, universe_n: int = 100) -> pd.DataFrame:
+    """universe_n=100：時點前 100；很大（如 100000）= 當月有交易（>=20 天）的所有幣安 USDT 永續。"""
     ts.EXITS = EXITS
-    mem, pit = cx.pit_index()
+    from grid_trading.pit_universe import membership
+    mem100, pit100 = cx.pit_index()
+    if universe_n == 100:
+        mem, pit = mem100, pit100
+    else:
+        mem = membership(n=universe_n)
+        mem["month"] = mem["month"].astype(str)
+        pit = pd.MultiIndex.from_arrays([mem["symbol"], mem["month"]])
     symbols = cx.universe_symbols(mem)
     if max_syms:
         symbols = symbols[:max_syms]
@@ -86,6 +94,8 @@ def export(max_syms: int = 0) -> pd.DataFrame:
             cx.log(f"engulf_1d_opt {n}/{len(symbols)}")
     raw = pd.concat(parts, ignore_index=True)
     raw = raw[(raw["time"] >= cx.START) & cx.in_pit(pit, raw["symbol"], raw["time"])]
+    if universe_n != 100:
+        return _export_all(raw, pit100)
     liq = raw["sig_adv"] >= MIN_ADV
     s1, s2 = raw["config"] == "S_cross5|tp1", raw["config"] == "S_cross5|h12"
     sel = {
@@ -113,10 +123,35 @@ def export(max_syms: int = 0) -> pd.DataFrame:
     return led
 
 
+LED_ALL = OUT / "cv_ledgers" / "engulf_1d_all.pkl"
+
+
+def _export_all(raw: pd.DataFrame, pit100) -> pd.DataFrame:
+    """全部永續（2026-11-23 Denny 問「不設成交額、也不限前 100」）：A_all 不設門檻、A_all30 均成交額 >= 3,000 萬 U。
+    另存 top100 欄（進場月份是否在時點前 100），只拿來拆開看，不另算設定。"""
+    s1 = raw["config"] == "S_cross5|tp1"
+    sel = {"A_all": s1, "A_all30": s1 & (raw["sig_adv"] >= MIN_ADV),
+           "R_all": (raw["config"] == "R_cross5|tp1")}
+    tr = pd.concat([raw[m].assign(config=c) for c, m in sel.items()], ignore_index=True)
+    tr = cx.one_at_a_time(tr, ["config", "symbol"])
+    top = cx.in_pit(pit100, tr["symbol"], tr["time"])
+    adv = tr["sig_adv"].to_numpy()
+    led = cx.finish(tr)
+    # finish 會排序，重新對回去
+    key = tr.assign(top100=top, sig_adv=adv)[["config", "symbol", "time", "top100", "sig_adv"]]
+    key["time"] = pd.to_datetime(key["time"], utc=True)
+    led = led.merge(key.drop_duplicates(["config", "symbol", "time"]), on=["config", "symbol", "time"], how="left")
+    led.to_pickle(LED_ALL)
+    cx.log("每組筆數 / 平均 r_net:\n" + led.groupby(["config", "top100"])["r_net"].agg(["size", "mean"]).to_string())
+    return led
+
+
 def main() -> None:
     cmd = sys.argv[1] if len(sys.argv) > 1 else "export"
     if cmd == "export":
         export(int(sys.argv[2]) if len(sys.argv) > 2 else 0)
+    elif cmd == "export_all":
+        export(int(sys.argv[2]) if len(sys.argv) > 2 else 0, universe_n=100000)
     else:
         from research.engulf_1d_eval import evaluate_all
         evaluate_all()
