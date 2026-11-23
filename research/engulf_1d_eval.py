@@ -154,3 +154,50 @@ def evaluate_all() -> None:
                   "failed_checks"]].round(3).to_string())
         print(wf_years.to_string())
         print(cb.round(4).to_string())
+
+
+def evaluate_universe() -> None:
+    """全部永續的 2 組（補登記 2026-11-23）。python -c 'from research.engulf_1d_eval import evaluate_universe as f; f()'"""
+    from research.engulf_1d_opt import LED_ALL
+    led = pd.read_pickle(LED_ALL)
+    for c in ("time", "exit_t"):
+        led[c] = pd.to_datetime(led[c], utc=True)
+    vegas = external_live().copy()
+    for c in ("time", "exit_t"):
+        vegas[c] = pd.to_datetime(vegas[c], utc=True)
+    new = ["A_all", "A_all30"]
+    if trials(count_configs=True) < 1935:
+        log_experiment(family="engulf_1d_opt", hypothesis="全部幣安 USDT 永續（不限前 100）、有無 30M 成交額門檻（補登記）",
+                       params={"configs": new}, data_source="binance um 1h->1D, all perps traded >=20d in month",
+                       period="2020-2026", verdict="info", report=REPORT, notes="configs=2")
+    n_trials = trials(count_configs=True)
+    rnd = _cfg(led, "R_all")
+    rows = []
+    for c in new:
+        g = _cfg(led, c)
+        res = evaluate(g, baseline=vegas, random_baseline=rnd, cfg=GateConfig(n_trials=n_trials, risk=RISK))
+        ch = res["checks"]
+        log_experiment(family="engulf_1d_opt", hypothesis=f"validation_gate {c}", params={"config": c, "n_trials": n_trials},
+                       data_source="binance um all perps", period="2020-2026", trades=len(g), exp_r=round(res["info"]["mean_r"], 4),
+                       t_stat=round(ch["cluster_t"]["value"], 3), verdict="pass" if res["passed"] else "fail", report=REPORT,
+                       notes=f"{res['verdict']}; configs=0")
+        y = g["time"].dt.year
+        for lab, m in (("all", np.ones(len(g), bool)), ("2020-23", y < 2024), ("2024+", y >= 2024),
+                       ("top100", g["top100"].astype(bool)), ("outside100", ~g["top100"].astype(bool)),
+                       ("outside100_2024+", ~g["top100"].astype(bool) & (y >= 2024)),
+                       ("long", g["side"] > 0), ("short", g["side"] < 0)):
+            gg = g[np.asarray(m)]
+            rows.append({"config": c, "slice": lab, "trades": len(gg), "mean_r": gg["r_net"].mean(),
+                         "win": (gg["r_net"] > 0).mean(), "t_strict": ledger_stats(gg)["t_strict"],
+                         **({"t_required": ch["cluster_t"]["threshold"], "dsr": ch["deflated_sharpe"]["value"],
+                             "corr_vegas": ch["baseline_corr"]["value"], "beats_random": ch["beats_random"]["status"],
+                             "passed": res["passed"]} if lab == "all" else {})})
+        cvr = evaluate_family(g, CVConfig(), FlipRule())
+        rows[-8].update({"cpcv_frac_pos": cvr["cpcv"]["summary"]["frac_splits_pos"],
+                         "wf_mean_r": cvr["walk_forward"]["summary"]["mean_r"]})
+    rr = rnd
+    rows.append({"config": "R_all", "slice": "all", "trades": len(rr), "mean_r": rr["r_net"].mean(), "win": (rr["r_net"] > 0).mean()})
+    out = pd.DataFrame(rows)
+    out.to_csv(OUT / f"engulf_opt_universe_{TAG}.csv", index=False)
+    with pd.option_context("display.width", 250, "display.max_columns", 30):
+        print(out.round(3).to_string())
