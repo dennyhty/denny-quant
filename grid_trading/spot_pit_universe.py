@@ -28,13 +28,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import pandas as pd
+from grid_trading.data_cache import data_dir
 import requests
 
 from grid_trading.binance_history import FILES, LISTING
 from grid_trading.pit_universe import STABLE, TABLE_COLUMNS, _list_prefixes, _session, membership
 
 SPOT_KLINES = "data/spot/monthly/klines/"
-CACHE_DIR = Path("data/binance_spot_pit")
+CACHE_DIR = data_dir("binance_spot_pit")
 DAILY_CACHE = CACHE_DIR / "spot_1d.csv.gz"
 DAILY_COLUMNS = ["symbol", "time", "open", "high", "low", "close", "volume", "quote_volume"]
 FIRST_MONTH = "2017-08"          # 現貨月檔最早的月份

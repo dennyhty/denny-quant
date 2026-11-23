@@ -26,6 +26,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from grid_trading.data_cache import data_dir
 import requests
 
 import research.entry_research as er
@@ -36,7 +37,7 @@ from research.stop_research import cluster_key, cluster_stats
 from research.validation_gate import GateConfig, cluster_t_values, evaluate
 
 CMC_HIST = "https://api.coinmarketcap.com/data-api/v3/cryptocurrency/listings/historical"
-CMC_DIR = Path("data/cmc_hist")
+CMC_DIR = data_dir("cmc_hist")
 OUT = Path("output")
 START = pd.Timestamp("2020-01-01", tz="UTC")
 

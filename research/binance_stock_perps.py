@@ -28,6 +28,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from grid_trading.data_cache import data_dir
 import requests
 
 import research.rwa_underlying as ru
@@ -38,7 +39,7 @@ from research.stop_research import LIVE_ATR, MIN_STOP_PCT, cluster_key, cluster_
 from research.exit_unify import account
 
 OUT = Path("output")
-CACHE = Path("data/yahoo_us")
+CACHE = data_dir("yahoo_us")
 UA = {"User-Agent": "Mozilla/5.0"}
 LISTED_AFTER = "2025-12-01"  # 幣安美股永續 2025-12 之後才陸續上架
 # 槓桿、反向、波動率 ETF：每天重設槓桿，長期會耗損，不適合拿趨勢策略比較

@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 
 from grid_trading import signals
+from grid_trading.data_cache import data_dir
 from grid_trading.orderflow import add_features, flow_bars
 from grid_trading.signals import orderflow  # noqa: F401  登記訂單流策略
 from grid_trading.signals.evaluate import split_summary, trades_for
@@ -69,7 +70,7 @@ def family(label: str) -> str:
 
 
 def coins() -> list[str]:
-    return [c for c in TOP100 if Path(f"data/binance/{c}_1h_flow.csv.gz").exists()]
+    return [c for c in TOP100 if data_dir("binance", f"{c}_1h_flow.csv.gz").exists()]
 
 
 def _bars(coin: str, tf: str) -> pd.DataFrame:

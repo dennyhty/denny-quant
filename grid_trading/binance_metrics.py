@@ -20,11 +20,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pandas as pd
+from .data_cache import data_dir
 import requests
 
 from .binance_history import FILES, LISTING, binance_symbols
 
-CACHE_DIR = Path("data/binance")
+CACHE_DIR = data_dir("binance")
 FIELDS = {
     "sum_open_interest": "oi",
     "sum_open_interest_value": "oi_value",
