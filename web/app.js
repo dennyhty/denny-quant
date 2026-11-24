@@ -255,7 +255,8 @@ function statusText(s) {
 const LIVE_MIN_ADV = 3e7;
 function advChip(s) {
   const adv = (s.info || {}).adv_usdt;
-  if (adv == null || adv >= LIVE_MIN_ADV) return "";
+  // 只有維加斯有成交額門檻；日線吞沒（engulf_1d）實盤不設門檻（Denny 2026-11-23）
+  if (adv == null || adv >= LIVE_MIN_ADV || s.strategy === "engulf_1d") return "";
   return `<span class="chip warn-chip" title="近 30 天日均成交額 ${Math.round(adv / 1e4).toLocaleString()} 萬 U，低於 3,000 萬，實盤不做">成交額不足・實盤不做</span>`;
 }
 
@@ -338,7 +339,7 @@ function renderDetailHead() {
       <span>MACD DIF / DEA</span><span>${fp(i.macd, s.price)} / ${fp(i.macd_signal, s.price)}</span>
       <span>MACD 柱</span><span>${fp(i.hist, s.price)}</span>
       <span>ATR</span><span>${fp(i.atr, s.price)}</span>
-      ${i.adv_usdt != null ? `<span>近 30 天日均成交額</span><span>${Math.round(i.adv_usdt / 1e4).toLocaleString()} 萬 U${i.adv_usdt < LIVE_MIN_ADV ? "（低於 3,000 萬，實盤不做）" : ""}</span>` : ""}
+      ${i.adv_usdt != null ? `<span>近 30 天日均成交額</span><span>${Math.round(i.adv_usdt / 1e4).toLocaleString()} 萬 U${i.adv_usdt < LIVE_MIN_ADV && s.strategy !== "engulf_1d" ? "（低於 3,000 萬，實盤不做）" : ""}</span>` : ""}
       ${i.adx != null ? `<span>ADX(14)</span><span>${i.adx}</span>` : ""}
       <span>EMA144 / 169</span><span>${fp(i.ema144)} / ${fp(i.ema169)}</span>`}
       ${a ? `<span>實盤規則回測</span><span>${s.label}：勝率 ${(a.win_rate * 100).toFixed(1)}%、每筆 ${fmtR(a.avg_r)}（${a.trades} 筆）</span>` : ""}
