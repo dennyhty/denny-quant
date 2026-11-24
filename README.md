@@ -6,13 +6,14 @@ VPS 上的自動交易程式（`grid_trading/trader`）照同一份規則在幣�
 **2026-10-20 起網站只掃幣安**：K 線、現價、合約名單都來自幣安，派網、觀察組（SMC、訂單流、突破追多）、
 美股/商品分頁都拿掉了。下面提到派網、觀察組、下單計算的段落是之前的紀錄，研究結論仍然有效。
 
-- 網站：https://dennyhty.github.io/grid-trading/ （每 15 分鐘更新，Telegram 推播）。分頁：訊號 / 績效（幣安自動交易、維加斯回測）/ 策略研究，見 [docs/website.md](docs/website.md)
+- 網站：https://dennyhty.github.io/denny-quant/ （每 15 分鐘更新，Telegram 推播）。分頁：訊號 / 績效（幣安自動交易、維加斯回測）/ 策略研究，見 [docs/website.md](docs/website.md)
 - [系統說明書](docs/system.md)：架構、策略上線/下架標準、每個策略的現況、風險規則
 - [操作手冊](docs/runbook.md)：收到訊號後在派網怎麼下單、持倉中怎麼改單、每週檢討
 - [研究報告索引](reports/README.md)：所有回測研究和結論
 - 實盤策略說明：[維加斯順勢](docs/strategy_vegas_trend.md)、[4H 詳解](docs/strategy_vegas_trend_4H_詳解.md)
 
-repo 名稱裡的 grid 是歷史名稱：網格策略在 2026-10-12 回測全部虧損後放棄，現在是訊號式交易。
+repo 原名 grid-trading，2026-11-24 改名為 denny-quant。網格策略在 2026-10-12 回測全部虧損後放棄，現在是訊號式交易；
+Python 套件名稱 `grid_trading` 是歷史命名，為了不動到 import 沿用不改。VPS 上的資料夾 `/home/trader/grid-trading` 也維持原名。
 
 ```
 grid_trading/     資料、指標、策略（grid_trading/signals/）
@@ -154,7 +155,7 @@ python -m research.dca_backtest     # 60 條規則 × 分段期間 × 滾動 2/4
 ### 放在 GitHub Pages（不用開電腦）
 
 `.github/workflows/pages.yml` 每 15 分鐘（:00、:15、:30、:45 收盤後 15 秒）在 GitHub 上跑一次 `signal_snapshot.py`：掃描訊號、追蹤 TP/SL、產生圖表資料，
-連同網頁一起直接發佈到 GitHub Pages。網址是 `https://dennyhty.github.io/grid-trading/`。
+連同網頁一起直接發佈到 GitHub Pages。網址是 `https://dennyhty.github.io/denny-quant/`。
 
 - 第一次要做：到 repo 的 Settings → Pages，Source 選「GitHub Actions」。
 - 網站每 15 分鐘更新一次；TP/SL 觸及最多晚 15 分鐘左右更新。

@@ -1,6 +1,6 @@
 # 操作手冊：收到訊號後怎麼做
 
-網站：https://dennyhty.github.io/grid-trading/ 。系統只給訊號和價位，下單在派網 App 自己做。
+網站：https://dennyhty.github.io/denny-quant/ 。系統只給訊號和價位，下單在派網 App 自己做。
 系統整體說明見 [system.md](system.md)。
 
 ## 1. 收到新訊號

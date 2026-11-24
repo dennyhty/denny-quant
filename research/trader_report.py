@@ -22,7 +22,7 @@ import sys
 import time
 import urllib.request
 
-FEED = "https://dennyhty.github.io/grid-trading/data/trader.json"
+FEED = "https://dennyhty.github.io/denny-quant/data/trader.json"
 BASELINE_R = 0.094  # 誠實版回測，扣成本後每筆
 BASELINE_WIN = 0.54
 STALE_MIN = 45  # 紀錄超過這麼久沒更新就提醒（trader 每個 K 線收盤才更新）
