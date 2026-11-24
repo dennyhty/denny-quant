@@ -23,15 +23,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import pandas as pd
+from grid_trading.data_cache import data_dir
 import requests
 from requests.adapters import HTTPAdapter
 
 from grid_trading.binance_history import COLUMNS, FILES, LISTING, _months, _read_zip, clean
 
 UM_KLINES = "data/futures/um/monthly/klines/"
-CACHE_DIR = Path("data/binance")
+CACHE_DIR = data_dir("binance")
 VOLUME_CACHE = CACHE_DIR / "pit_monthly_volume.csv"
-SYM_CACHE_DIR = Path("data/binance_sym")
+SYM_CACHE_DIR = data_dir("binance_sym")
 TABLE_COLUMNS = ["symbol", "month", "quote_volume", "days", "first_day", "last_day"]
 
 # 穩定幣和法幣：不是要交易的標的

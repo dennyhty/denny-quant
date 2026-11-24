@@ -36,6 +36,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from grid_trading.data_cache import data_dir
 
 from grid_trading import indicators as ind
 from grid_trading.binance_history import FILES, binance_symbols, load
@@ -46,7 +47,7 @@ from research.stop_research import (LIVE_ATR, MAX_BARS, MIN_STOP_PCT, PARENT_MS,
                            cluster_stats, load_frame, periods, sim_many, summarize)
 
 BARS_PER_DAY = {"4H": 6, "2H": 12}
-FUNDING_DIR = Path("data/binance/funding")
+FUNDING_DIR = data_dir("binance", "funding")
 MAX_EXT = 6.0  # 候選最多離通道幾倍 ATR（實盤是 3）
 
 
@@ -612,7 +613,7 @@ def timing(interval: str, fee: float, slip: float, workers: int, out: Path) -> p
 
 
 DELAYS = (0, 1, 2, 3, 5, 10, 15)  # 分鐘
-M1_DIR = Path("data/binance/m1")
+M1_DIR = data_dir("binance", "m1")
 
 
 def _live_signals(coin: str, interval: str):

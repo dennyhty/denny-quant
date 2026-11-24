@@ -25,6 +25,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from grid_trading.data_cache import data_dir
 import requests
 
 import research.entry_research as er
@@ -34,7 +35,7 @@ from grid_trading.signals.strategy import LONG
 from grid_trading.signals.vegas_trend import VegasTrend
 from grid_trading.universe import RWA_COMMODITIES, RWA_STOCKS
 
-CACHE = Path("data/yahoo")
+CACHE = data_dir("yahoo")
 UA = {"User-Agent": "Mozilla/5.0"}
 PLAN = ((1.0, 3.0, 5.0), (0.25, 0.25, 0.25), 3.0)  # 實盤出場（4H、2H 一樣）
 FEE = 0.0005

@@ -49,6 +49,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from grid_trading.data_cache import data_dir
 import requests
 from numba import njit
 
@@ -61,7 +62,7 @@ from grid_trading.signals.vegas_trend import VegasTrend
 from grid_trading.universe import TOP100
 
 OUT = Path("output/classic")
-FUNDING_DIR = Path("data/binance/funding")
+FUNDING_DIR = data_dir("binance", "funding")
 SPLIT = pd.Timestamp("2024-01-01")  # 時間一律用 UTC、不帶時區
 FEE = 0.0005
 MIN_STOP_PCT = 0.001

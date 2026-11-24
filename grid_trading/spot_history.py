@@ -12,11 +12,12 @@ import zipfile
 from pathlib import Path
 
 import pandas as pd
+from .data_cache import data_dir
 import requests
 
 FILES = "https://data.binance.vision/"
 LISTING = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
-CACHE_DIR = Path("data/binance_spot")
+CACHE_DIR = data_dir("binance_spot")
 COLUMNS = ["time", "open", "high", "low", "close", "volume"]
 
 

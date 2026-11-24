@@ -23,11 +23,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from .data_cache import data_dir
 import requests
 
 FILES = "https://data.binance.vision/"
 LISTING = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
-FUNDING_CACHE_DIR = Path("data/binance_funding")
+FUNDING_CACHE_DIR = data_dir("binance_funding")
 FUNDING_COLUMNS = ["calc_time", "funding_interval_hours", "last_funding_rate"]
 
 # 滑價分級（每邊 bp）：(30 日平均日成交額 USDT 下限, bp)，由大到小。

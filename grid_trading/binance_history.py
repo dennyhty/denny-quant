@@ -7,7 +7,8 @@
 - 改名的幣會接上舊代號（MATIC→POL、RNDR→RENDER，都是 1:1 換幣）。
 - 下架後的月檔會繼續出現成交量 0 的平線，先刪掉。刪完後中間斷超過 10 天的（下架後又重新上架，
   可能已經是別的幣，例如 LIT），只取最後一段連續的資料。
-- 結果快取在 data/binance/{幣}_{週期}.csv.gz，欄位和派網的快取相同（time 是毫秒）。
+- 結果快取在共用資料夾的 binance/{幣}_{週期}.csv.gz（見 data_cache.py），欄位和派網的快取相同（time 是毫秒）；
+  已有的檔案只補新月份。
 """
 
 from __future__ import annotations
@@ -20,11 +21,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pandas as pd
+from .data_cache import checked_month, data_dir, latest_complete_month, mark_checked
 import requests
 
 FILES = "https://data.binance.vision/"
 LISTING = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
-CACHE_DIR = Path("data/binance")
+CACHE_DIR = data_dir("binance")
 # 幣安合約代號和派網不同的幣：小單價的幣以 1000 枚為單位，改名的幣接上舊代號（由舊到新）
 SYMBOLS = {
     "SHIB": ["1000SHIBUSDT"],
@@ -84,26 +86,49 @@ def fetch_binance(coin: str, interval: str = "1h", refresh: bool = False, flow: 
     """回傳幣安合約的完整月檔 K 線（interval 用幣安的寫法：1h、4h、1d…），time 為 UTC。
 
     flow=True 時多留成交額、筆數和主動買入量（FLOW_COLUMNS），另存在 {幣}_{週期}_flow.csv.gz。
+    快取在共用資料夾（見 grid_trading/data_cache.py）；已有的檔案只補新的月份（增量更新），
+    上個月的月檔都在就完全不連網。refresh=True 才會整個重抓。
     """
     name = f"{interval}_flow" if flow else interval
     path = CACHE_DIR / f"{coin}_{name}.csv.gz"
+    latest = latest_complete_month()
     if path.exists() and not refresh:
+        old = pd.read_csv(path)
+        if old.empty:
+            return load(coin, name)
+        last = pd.Timestamp(int(old["time"].iloc[-1]), unit="ms").to_period("M")
+        checked = checked_month(path.name)
+        if last >= latest or (checked is not None and checked >= latest):
+            return load(coin, name)
+        parts = [old] + _download(coin, interval, flow, since=last)  # 最後一個月重抓一次，防它當時不完整
+        _save(clean(pd.concat(parts)), path, latest)
         return load(coin, name)
+    parts = _download(coin, interval, flow)
+    if not parts:
+        return pd.DataFrame()
+    _save(clean(pd.concat(parts)), path, latest)
+    return load(coin, name)
+
+
+def _download(coin: str, interval: str, flow: bool, since: pd.Period | None = None) -> list[pd.DataFrame]:
     session = requests.Session()
     parts = []
     for sym in binance_symbols(coin):
         keys = _months(sym, interval, session)
+        if since is not None:
+            keys = [k for k in keys if pd.Period(k[-11:-4], "M") >= since]
         if keys:
             with ThreadPoolExecutor(8) as ex:
                 parts += list(ex.map(lambda k: _read_zip(k, session, flow), keys))
-    if not parts:
-        return pd.DataFrame()
-    df = clean(pd.concat(parts))
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return parts
+
+
+def _save(df: pd.DataFrame, path: Path, checked: pd.Period) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp.gz")
     df.to_csv(tmp, index=False)
     os.replace(tmp, path)
-    return load(coin, name)
+    mark_checked(path.name, checked)
 
 
 def clean(df: pd.DataFrame) -> pd.DataFrame:
@@ -129,7 +154,7 @@ SPOT_SYMBOLS = {
     "POL": [("MATICUSDT", 1.0), ("POLUSDT", 1.0)],
     "RENDER": [("RNDRUSDT", 1.0), ("RENDERUSDT", 1.0)],
 }
-SPOT_CACHE_DIR = Path("data/binance_spot")
+SPOT_CACHE_DIR = data_dir("binance_spot")
 
 
 def fetch_spot_before(coin: str, interval: str, before_ms: int) -> pd.DataFrame:

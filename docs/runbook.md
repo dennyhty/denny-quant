@@ -53,3 +53,25 @@ Telegram 和網站的鈴鐺會收到「BTC/USDT 4H 做多訊號 @ 價格」。�
 | 某些幣的持倉不見了 | 通常是派網限流，下一輪會補回來；持續的話在專案裡說 |
 | Telegram 沒收到 | Actions 裡 pages.yml 最後一步的紀錄；token 和 chat id 在 repo 的 Secrets |
 | 想暫停所有訊號 | Actions → 訊號定時器 → Disable workflow |
+
+## 5. 研究用歷史資料快取（回測不用重新下載）
+
+幣安的歷史 K 線（data.binance.vision 月檔）集中存在**共用快取**，不同對話、不同容器都讀同一份，
+只有網路上多了新月份才會補抓，不用每個回測都重新下載。
+
+- 位置：`/mnt/project-files/data_cache/`（專案共用資料夾，跨對話保留）。沒有這個資料夾時退回本機 `./data/`
+  （被 .gitignore）；也可以用環境變數 `GRID_DATA_CACHE` 指定。路徑邏輯在 `grid_trading/data_cache.py`。
+- 格式：一個代號、一個週期一個 `csv.gz`（`binance/{幣}_{週期}.csv.gz`，time 為毫秒），
+  不拆小檔，因為共用資料夾是網路磁碟，檔案太多會很慢。
+- **寫新的研究腳本時**：直接用 `grid_trading.binance_history.fetch_binance(coin, "1h")`（會自動讀快取、補新月份）
+  或 `load(coin, "1h")`（只讀快取）。要新增別的資料來源，路徑用 `data_dir("子資料夾")`，不要寫死 `Path("data/...")`。
+- 更新規則：K 線月檔只到上個月月底。檔案已經到上個月，或這個月檢查過（記在 `_checked.json`），就完全不連網；
+  否則只下載最後一個月起的新月份再合併。`refresh=True` 才會整個重抓。
+- 一次補齊／看現況：
+  ```
+  python -m research.sync_data                    # TOP100 的 1h、4h 補到最新
+  python -m research.sync_data --status           # 只看快取現況，不連網
+  python -m research.sync_data --intervals 1d --coins BTC ETH
+  ```
+- 已經預先抓好 TOP100 的 1h、4h。其他週期、metrics、現貨前段等資料第一次用到時會自動下載並存進同一個資料夾。
+- 不會碰實盤交易程式（`binance_trader.py`、`grid_trading/trader/` 沒有改）。
