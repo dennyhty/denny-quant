@@ -12,7 +12,8 @@ VPS 上的自動交易程式（`grid_trading/trader`）照同一份規則在幣�
 - [研究報告索引](reports/README.md)：所有回測研究和結論
 - 實盤策略說明：[維加斯順勢](docs/strategy_vegas_trend.md)、[4H 詳解](docs/strategy_vegas_trend_4H_詳解.md)
 
-repo 名稱裡的 grid 是歷史名稱：網格策略在 2026-10-12 回測全部虧損後放棄，現在是訊號式交易。
+repo 原名 grid-trading，2026-11-24 改名為 denny-quant。網格策略在 2026-10-12 回測全部虧損後放棄，現在是訊號式交易；
+Python 套件名稱 `grid_trading` 是歷史命名，為了不動到 import 沿用不改。VPS 上的資料夾 `/home/trader/grid-trading` 也維持原名。
 
 ```
 grid_trading/     資料、指標、策略（grid_trading/signals/）
