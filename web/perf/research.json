@@ -9,6 +9,13 @@
   },
   "groups": [
     {
+      "name": "實盤日線吞沒",
+      "items": [
+        {"date": "2026-11-23", "title": "日線 EMA8/20 吞沒：上線前優化", "file": "signals/report_engulf_1d_opt_20261122.md", "status": "live",
+         "summary": "3,549 筆、每筆 +0.104R（已扣成本）、勝率 56%；7 組優化和放寬幣池都沒過驗證門檻，只做空最好。Denny 2026-11-23 決定照原規則上線（前 100 名、不設成交額門檻）。"}
+      ]
+    },
+    {
       "name": "實盤維加斯：績效與風險",
       "items": [
         {"date": "2026-10-19", "title": "2026 年 3~5 月大回撤", "file": "signals/report_drawdown_2026_20261019.md", "status": "pending",

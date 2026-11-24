@@ -22,7 +22,7 @@
   const STATUS_CLASS = { live: "st-live", observe: "st-observe", keep: "st-keep", pending: "st-pending", rejected: "st-rejected", info: "st-info" };
 
   let page = "signals";
-  let bt = null, trader = null, research = null;
+  let bt = null, bt2 = null, trader = null, research = null;
   let book = store("perf-book") || "4H+2H";
   let curveMode = store("perf-curve") || "simple";
   let mode = store("perf-mode") || null;
@@ -87,19 +87,24 @@
     const el = $id("perf-view");
     if (!bt || !trader) {
       el.innerHTML = `<div class="empty">讀取中…</div>`;
-      const [b, t] = await Promise.allSettled([getJson("perf/vegas_backtest.json"), getJson("data/trader.json")]);
+      const [b, t, g] = await Promise.allSettled([getJson("perf/vegas_backtest.json"), getJson("data/trader.json"),
+        getJson("perf/engulf_backtest.json")]);
       bt = b.status === "fulfilled" ? b.value : { error: b.reason?.message };
+      bt2 = g.status === "fulfilled" ? g.value : { error: g.reason?.message };
       trader = t.status === "fulfilled" ? t.value : { books: {} };
       if (page !== "perf") return;
     }
     dropCharts();
+    const hs = location.hash;
     el.innerHTML = `
       <div class="seg" id="perf-sec">
-        <a href="#perf" class="${location.hash === "#perf/bt" ? "" : "on"}">幣安自動交易</a>
-        <a href="#perf/bt" class="${location.hash === "#perf/bt" ? "on" : ""}">維加斯回測</a>
+        <a href="#perf" class="${hs === "#perf/bt" || hs === "#perf/bt-engulf" ? "" : "on"}">幣安自動交易</a>
+        <a href="#perf/bt" class="${hs === "#perf/bt" ? "on" : ""}">維加斯回測</a>
+        <a href="#perf/bt-engulf" class="${hs === "#perf/bt-engulf" ? "on" : ""}">日線吞沒回測</a>
       </div>
       <div id="perf-body"></div>`;
-    if (location.hash === "#perf/bt") renderBacktest($id("perf-body"));
+    if (hs === "#perf/bt") renderBacktest($id("perf-body"), bt);
+    else if (hs === "#perf/bt-engulf") renderBacktest($id("perf-body"), bt2, true);
     else renderTrader($id("perf-body"));
   }
 
@@ -210,16 +215,32 @@
   }
 
   // 維加斯回測
-  function renderBacktest(el) {
-    if (!bt || bt.error || !bt.books) { el.innerHTML = `<div class="panel">回測資料讀不到：${h(bt && bt.error)}</div>`; return; }
-    const B = bt.books[book] || bt.books["4H+2H"];
+  function renderBacktest(el, data, engulf = false) {
+    if (!data || data.error || !data.books) { el.innerHTML = `<div class="panel">回測資料讀不到：${h(data && data.error)}</div>`; return; }
+    const B = engulf ? data.books["1D"] : (data.books[book] || data.books["4H+2H"]);
     const m = B.metrics;
+    const head = engulf
+      ? `<div class="row-between"><h3>日線 EMA8/20 吞沒 <span class="chip tag-chip">實盤規則回測</span></h3></div>
+        <p class="muted">${m.start} ~ ${m.end}，${m.coins} 個幣，幣安 USDT 永續（每月用上個月成交額前 100 名，含後來下市的幣）。
+          每筆風險 ${(data.risk * 100).toFixed(2)}%，<b>已扣</b>手續費每邊 0.05%、滑價和資金費率。規則：日線 EMA8/20 5 根內剛交叉＋同向吞沒 K，
+          掛單在吞沒 K 實體一半、3 天內沒成交取消，止損 1.5 ATR，1R 全部出場，60 天到期平倉。這是用現在的規則回頭算，不是實際成交。</p>`
+      : `<div class="row-between"><h3>維加斯順勢 <span class="chip tag-chip">實盤規則回測</span></h3>
+          <div class="seg small">${Object.keys(data.books).map((k) => `<button data-book="${k}" class="${k === book ? "on" : ""}">${k === "4H+2H" ? "4H+2H 實盤" : k}</button>`).join("")}</div></div>
+        <p class="muted">${m.start} ~ ${m.end}，${m.coins} 個幣，幣安合約（上市前接現貨）。每筆風險 ${(data.risk * 100).toFixed(2)}%，
+          含手續費每邊 0.05%，<b>沒算滑價和資金費率</b>。這是用現在的規則回頭算，不是實際成交。</p>`;
+    const name = engulf ? "日線吞沒" : `維加斯 ${book}`;
+    const caveats = engulf ? `
+        <li>這個策略沒有通過驗證門檻（嚴格 t 2.8，門檻 4.05），吞沒 K 本身也沒有明顯贏過「剛交叉後隨機進場」。</li>
+        <li>2024 年以後每筆只剩約 +0.05R；多單幾乎不賺，主要靠空單。</li>
+        <li>和維加斯的日報酬相關約 0.27，一起做有分散效果。詳見「策略研究」裡的日線吞沒報告。</li>`
+      : `
+        <li>沒算滑價和資金費率；每邊多 0.05% 滑價每筆約少 0.04R，2026 年的優勢會接近 0。</li>
+        <li>同一天很多幣同方向出訊號，其實是同一個賭注；t 值已經用「同日同向算一群」算過。</li>
+        <li>規則是看過 2020 ~ 2026 的資料後定的（RSI 範圍、出場、ADX），全期數字偏樂觀；2024 年後和最近一年比較接近實際。</li>
+        <li>2017 ~ 2019 年用現貨補，當時能交易的幣只有 10 ~ 20 個。</li>`;
     el.innerHTML = `
       <div class="panel">
-        <div class="row-between"><h3>維加斯順勢 <span class="chip tag-chip">實盤規則回測</span></h3>
-          <div class="seg small">${Object.keys(bt.books).map((k) => `<button data-book="${k}" class="${k === book ? "on" : ""}">${k === "4H+2H" ? "4H+2H 實盤" : k}</button>`).join("")}</div></div>
-        <p class="muted">${m.start} ~ ${m.end}，${m.coins} 個幣，幣安合約（上市前接現貨）。每筆風險 ${(bt.risk * 100).toFixed(2)}%，
-          含手續費每邊 0.05%，<b>沒算滑價和資金費率</b>。這是用現在的規則回頭算，不是實際成交。</p>
+        ${head}
         ${tiles([
           ["年化（複利 CAGR）", sgn(m.cagr_pct, 1, "%"), cls(m.cagr_pct)],
           ["年化（單利）", sgn(m.simple_per_year_pct, 1, "%"), cls(m.simple_per_year_pct), "每筆都用起始資金的 0.25%"],
@@ -240,35 +261,31 @@
           <div class="seg small"><button data-curve="simple" class="${curveMode === "simple" ? "on" : ""}">單利 %</button>
           <button data-curve="compound" class="${curveMode === "compound" ? "on" : ""}">複利（對數）</button></div></div>
         <div id="bt-curve" class="chart-box tall"></div>
-        <div class="legend-row"><span style="--c:#d9b45a">維加斯 ${h(book)}</span>${curveMode === "compound" ? `<span style="--c:#6b7385">BTC 持有</span>` : ""}</div>
+        <div class="legend-row"><span style="--c:#d9b45a">${h(name)}</span>${curveMode === "compound" ? `<span style="--c:#6b7385">BTC 持有</span>` : ""}</div>
         <h3 class="mt">回撤（複利資金，已平倉）</h3>
         <div id="bt-dd" class="chart-box short"></div>
-        <p class="muted">這裡只看已平倉的單。把未平倉的浮動損益也算進去，回撤會再深幾個百分點（舊的「同幣只做一張」規則下，最深一次已平倉 −35.7%、含浮動約 −39%）。</p>
+        <p class="muted">這裡只看已平倉的單。把未平倉的浮動損益也算進去，回撤會再深幾個百分點${engulf ? "" : "（舊的「同幣只做一張」規則下，最深一次已平倉 −35.7%、含浮動約 −39%）"}。</p>
       </div>
       <div class="panel">
-        <h3>滾動期望值（最近 500 筆的平均 R）</h3>
+        <h3>滾動期望值（最近 ${engulf ? 300 : 500} 筆的平均 R）</h3>
         <div id="bt-roll" class="chart-box"></div>
-        <p class="muted">低於 0 代表最近 500 筆（約 5 個月）是虧的。線越往下，優勢越弱；2026 年明顯變弱。</p>
+        <p class="muted">${engulf ? "低於 0 代表最近 300 筆（約 7 個月）是虧的。" : "低於 0 代表最近 500 筆（約 5 個月）是虧的。線越往下，優勢越弱；2026 年明顯變弱。"}</p>
       </div>
       <div class="panel"><h3>各期間</h3>${recentTable(B.recent)}</div>
       <div class="panel"><h3>逐年</h3>${yearTable(B.yearly)}</div>
       <div class="panel"><h3>每月報酬（單利 %）</h3>${monthGrid(B.monthly)}</div>
       <div class="panel"><h3>多空、週期拆開</h3>${splitTable(B)}</div>
       <div class="panel"><h3>每筆 R 的分布</h3>${histSvg(B.histogram)}
-        <p class="muted">−1R 附近是止損，0 附近是保本出場，右邊的長尾是追蹤止損抓到的大行情。勝率主要由出場規則決定。</p></div>
-      <div class="panel caveat"><h3>要打折看的地方</h3><ul>
-        <li>沒算滑價和資金費率；每邊多 0.05% 滑價每筆約少 0.04R，2026 年的優勢會接近 0。</li>
-        <li>同一天很多幣同方向出訊號，其實是同一個賭注；t 值已經用「同日同向算一群」算過。</li>
-        <li>規則是看過 2020 ~ 2026 的資料後定的（RSI 範圍、出場、ADX），全期數字偏樂觀；2024 年後和最近一年比較接近實際。</li>
-        <li>2017 ~ 2019 年用現貨補，當時能交易的幣只有 10 ~ 20 個。</li>
+        <p class="muted">${engulf ? "−1R 附近是止損，+1R 附近是止盈（全部出場），中間的是 60 天到期平倉。" : "−1R 附近是止損，0 附近是保本出場，右邊的長尾是追蹤止損抓到的大行情。勝率主要由出場規則決定。"}</p></div>
+      <div class="panel caveat"><h3>要打折看的地方</h3><ul>${caveats}
       </ul></div>`;
     el.querySelectorAll("[data-book]").forEach((x) => x.addEventListener("click", () => { book = x.dataset.book; store("perf-book", book); renderPerf(); }));
     el.querySelectorAll("[data-curve]").forEach((x) => x.addEventListener("click", () => { curveMode = x.dataset.curve; store("perf-curve", curveMode); renderPerf(); }));
-    drawBacktestCharts(B);
+    drawBacktestCharts(B, data);
   }
 
-  function drawBacktestCharts(B) {
-    const dates = bt.dates;
+  function drawBacktestCharts(B, data) {
+    const dates = data.dates;
     const series = (arr, f = (v) => v) => {
       const out = [];
       arr.forEach((v, i) => { if (v != null) out.push({ time: dates[i], value: f(v) }); });
@@ -278,7 +295,7 @@
     const c1 = lineChart($id("bt-curve"), { height: 300, log, fmt: log ? (v) => `${v >= 10 ? v.toFixed(0) : v.toFixed(2)}x` : (v) => `${v.toFixed(0)}%` });
     if (log) {
       c1.addLineSeries({ color: "#6b7385", lineWidth: 1, priceLineVisible: false, lastValueVisible: false })
-        .setData(series(bt.btc_pct, (v) => 1 + v / 100));
+        .setData(series(data.btc_pct, (v) => 1 + v / 100));
       c1.addLineSeries({ color: "#d9b45a", lineWidth: 2, priceLineVisible: false }).setData(series(B.curve.compound_pct, (v) => 1 + v / 100));
     } else {
       c1.addLineSeries({ color: "#d9b45a", lineWidth: 2, priceLineVisible: false }).setData(series(B.curve.simple_pct));
@@ -503,7 +520,7 @@
   window.addEventListener("hashchange", route);
   // 自動交易紀錄每 5 分鐘重讀一次（網站本身每 15 分鐘更新）
   setInterval(async () => {
-    try { trader = await getJson("data/trader.json"); if (page === "perf" && location.hash !== "#perf/bt") renderPerf(); } catch { /* 下次再試 */ }
+    try { trader = await getJson("data/trader.json"); if (page === "perf" && !location.hash.startsWith("#perf/bt")) renderPerf(); } catch { /* 下次再試 */ }
   }, 300000);
   route();
 })();
