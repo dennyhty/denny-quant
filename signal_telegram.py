@@ -13,7 +13,7 @@ import time
 import urllib.parse
 import urllib.request
 
-SITE_URL = "https://dennyhty.github.io/grid-trading/"
+SITE_URL = "https://dennyhty.github.io/denny-quant/"
 MAX_MESSAGES = 30  # 一次最多送幾則，避免洗版；其餘請看網站
 
 

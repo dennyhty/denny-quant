@@ -18,7 +18,7 @@
 apt update && apt install -y git python3 python3-venv
 useradd -m -s /bin/bash trader          # 用一般帳號跑，不用 root
 su - trader
-git clone https://github.com/dennyhty/grid-trading.git
+git clone https://github.com/dennyhty/denny-quant.git grid-trading
 cd grid-trading
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 curl https://fapi.binance.com/fapi/v1/time   # 有回時間數字才繼續

@@ -1,6 +1,6 @@
 # 網站：訊號、績效、策略研究
 
-網址：https://dennyhty.github.io/grid-trading/ 。上方三個分頁：
+網址：https://dennyhty.github.io/denny-quant/ 。上方三個分頁：
 
 | 分頁 | 內容 | 資料從哪來 |
 | --- | --- | --- |
