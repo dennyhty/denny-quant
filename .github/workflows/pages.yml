@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main, claude/project-thread-t012rc]
-    paths: ["web/**", "reports/**", "grid_trading/**", "signal_*.py", "stats/**", ".github/workflows/pages.yml"]
+    paths: ["web/**", "reports/**", "grid_trading/**", "signal_*.py", "shadow_snapshot.py", "stats/**", ".github/workflows/pages.yml"]
 
 permissions:
   contents: read
@@ -71,6 +71,32 @@ jobs:
             echo '{"books":{}}' > trader_new.json; echo "還沒有自動交易紀錄"
           fi
           mv trader_new.json site/data/trader.json
+      # 只記錄不下單的影子紀錄（市值前 200 名裡實盤不會做的維加斯訊號，shadow_snapshot.py）。
+      # 上一份和其他紀錄一樣從目前的網站接著用（只有 404 才從頭開始，其他錯誤就不部署，免得紀錄被清空）；
+      # 掃描失敗不影響訊號部署，沿用上一份。
+      - name: 取得上一次的影子紀錄
+        run: |
+          owner="${GITHUB_REPOSITORY%/*}"; repo="${GITHUB_REPOSITORY#*/}"
+          for f in state ledger meta summary; do
+            code=$(curl -sS --retry 3 --retry-delay 5 -H 'Cache-Control: no-cache' -o "shadow_prev_$f.json" -w '%{http_code}' \
+              "https://${owner}.github.io/${repo}/data/shadow/$f.json?t=$(date +%s)") || code="curl 失敗"
+            if [ "$code" = "404" ]; then rm -f "shadow_prev_$f.json"
+            elif [ "$code" != "200" ]; then echo "讀取 shadow/$f.json 失敗：HTTP $code"; exit 1; fi
+          done
+      - name: 影子紀錄（只記錄不下單）
+        run: |
+          set +e
+          args=""
+          [ -f shadow_prev_state.json ] && args="$args --previous-state shadow_prev_state.json"
+          [ -f shadow_prev_ledger.json ] && args="$args --ledger shadow_prev_ledger.json"
+          [ -f shadow_prev_meta.json ] && args="$args --meta shadow_prev_meta.json"
+          python shadow_snapshot.py --out site $args
+          if [ $? -ne 0 ]; then
+            echo "影子紀錄這次沒更新，沿用上一份"
+            mkdir -p site/data/shadow
+            for f in state ledger meta summary; do [ -f "shadow_prev_$f.json" ] && cp "shadow_prev_$f.json" "site/data/shadow/$f.json"; done
+          fi
+          exit 0
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
