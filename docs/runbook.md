@@ -75,3 +75,10 @@ Telegram 和網站的鈴鐺會收到「BTC/USDT 4H 做多訊號 @ 價格」。�
   ```
 - 已經預先抓好 TOP100 的 1h、4h。其他週期、metrics、現貨前段等資料第一次用到時會自動下載並存進同一個資料夾。
 - 不會碰實盤交易程式（`binance_trader.py`、`grid_trading/trader/` 沒有改）。
+
+## 6. 影子紀錄（只記錄不下單）
+
+`shadow_snapshot.py` 每次網站部署時多跑一次（2026-11-26 起）：掃描市值前 200 名，把實盤**不會做**的維加斯 4H／2H 訊號
+（前 100 名但成交額 <3,000 萬 U，或市值 101–200 名）照實盤規則追蹤到結束。只存檔，不推播、不下單、不顯示在訊號頁。
+資料在網站的 `data/shadow/`：`ledger.json`（每筆結果）、`meta.json`、`summary.json`（各組筆數、勝率、平均 R，只扣手續費）。
+看結果：`python -m research.shadow_report`。回測對照見 reports/signals/report_adv_floating_20261126.md。
